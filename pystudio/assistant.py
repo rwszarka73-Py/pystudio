@@ -451,6 +451,7 @@ class AssistantPanel(QWidget):
         if hasattr(self, "input"):
             self.input.setPlaceholderText(f"Ask {aiproviders.short_name(p)} about your code...  (Enter sends, "
                                           "Shift+Enter for a new line)")
+            self.input.viewport().update()     # Qt only repaints a placeholder when it appears or disappears
 
     def provider_changed(self):
         self.stop()
