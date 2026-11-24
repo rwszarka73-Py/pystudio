@@ -184,7 +184,8 @@ class ClaudeClient(QObject):
 
 # ============================================================ settings dialog
 class AssistantSettings(QDialog):
-    """Which AI (Claude / Gemini / local), its key, and - for the local one - installing Ollama and models."""
+    """Which AI (Claude / Gemini / local / any OpenAI-compatible), its key, and - for the local one - installing
+    Ollama and models."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -259,6 +260,32 @@ class AssistantSettings(QDialog):
         self.pending_command = None          # run in the Terminal after this window closes
         self.pending_model = None
         self.pages.addWidget(po)
+        # Other (OpenAI-compatible)
+        px = _W()
+        fx = QFormLayout(px)
+        fx.setContentsMargins(0, 0, 0, 0)
+        note(fx, "Any AI that accepts OpenAI's request format: ChatGPT, OpenRouter, Groq, Mistral, DeepSeek, xAI, "
+                 "LM Studio and many more. Pick one to fill in its server, or type your own.")
+        self.cb_preset = QComboBox()
+        self.cb_preset.addItem("Pick a service...", None)
+        for name, url, model in aiproviders.OTHER_PRESETS:
+            self.cb_preset.addItem(name, (name, url, model))
+        self.cb_preset.activated.connect(self._preset_picked)
+        fx.addRow("Service:", self.cb_preset)
+        self.e_oname = QLineEdit(QSettings().value("otherName", "") or "")
+        self.e_oname.setPlaceholderText("what to call it, e.g. ChatGPT")
+        fx.addRow("Name:", self.e_oname)
+        self.e_ourl = QLineEdit(QSettings().value("otherUrl", "") or "")
+        self.e_ourl.setPlaceholderText("https://api.openai.com/v1")
+        fx.addRow("Server URL:", self.e_ourl)
+        self.e_okey = QLineEdit(keystore.get("otherApiKey"))
+        key_row(fx, self.e_okey, "from the service's site (leave empty for a local server)")
+        self.e_omodel = QLineEdit(QSettings().value("otherModel", "") or "")
+        self.e_omodel.setPlaceholderText("e.g. gpt-4o-mini  (the refresh button next to the model list loads them)")
+        fx.addRow("Model:", self.e_omodel)
+        note(fx, "These services charge per use or have their own free limits, and their own rules about what "
+                 "they keep - check the service's site before sending work code.")
+        self.pages.addWidget(px)
         self.cb_provider.currentIndexChanged.connect(self.pages.setCurrentIndex)
         self.pages.setCurrentIndex(self.cb_provider.currentIndex())
         f2 = QFormLayout()
@@ -311,11 +338,32 @@ class AssistantSettings(QDialog):
         QSettings().setValue("ollamaModel", name)
         self.accept()
 
+    def _preset_picked(self, i):
+        d = self.cb_preset.itemData(i)
+        if not d:
+            return
+        name, url, model = d
+        self.e_oname.setText(name.split(" (")[0] if "(local)" not in name else name.replace(" (local)", ""))
+        self.e_ourl.setText(url)
+        if model:
+            self.e_omodel.setText(model)
+        if self.e_omodel.text() and QSettings().value("otherUrl", "") != url:
+            QSettings().remove("otherModels")          # another service: its own model list
+        self.e_okey.setFocus()
+
     def apply(self):
         s = QSettings()
         from . import keystore
         keystore.set("claudeApiKey", self.e_key.text().strip())
         keystore.set("geminiApiKey", self.e_gkey.text().strip())
+        keystore.set("otherApiKey", self.e_okey.text().strip())
+        url = self.e_ourl.text().strip().rstrip("/")
+        if url and not url.startswith(("http://", "https://")):
+            local = url.startswith(("localhost", "127.", "0.0.0.0", "192.168.", "10.")) or ".local" in url
+            url = ("http://" if local else "https://") + url
+        s.setValue("otherUrl", url)
+        s.setValue("otherName", self.e_oname.text().strip())
+        s.setValue("otherModel", self.e_omodel.text().strip())
         s.setValue("aiProvider", self.cb_provider.currentText())
         s.setValue("claudeSendFile", self.cb_files.isChecked())
 
@@ -446,7 +494,8 @@ class AssistantPanel(QWidget):
         self.cb_model.setToolTip({"Claude": "Claude model (Sonnet: fast and smart; Opus: the most capable; Haiku: "
                                             "fastest)",
                                   "Gemini": "Gemini model (flash: fast, free tier; flash-lite: fastest; pro: "
-                                            "smartest, may not be free)"}.get(
+                                            "smartest, may not be free)",
+                                  aiproviders.OTHER: "The service's model (the refresh button loads its list)"}.get(
             p, "Local model (downloaded with Ollama; the gear button downloads more)"))
         if hasattr(self, "input"):
             self.input.setPlaceholderText(f"Ask {aiproviders.short_name(p)} about your code...  (Enter sends, "
@@ -466,7 +515,7 @@ class AssistantPanel(QWidget):
         if dlg.exec():
             dlg.apply()
             self.ck_context.setChecked(QSettings().value("claudeSendFile", True, type=bool))
-            if aiproviders.provider() != before:
+            if aiproviders.provider() != before or before == aiproviders.OTHER:
                 self.provider_changed()
             self._render()
             if dlg.pending_command:
@@ -670,8 +719,11 @@ class AssistantPanel(QWidget):
                       "*how do I read a CSV into the grid?*, *what's the Python for VB's Select Case?*\n\n"
                       f"{name} sees the open file (and your selection, errors, and form's controls). "
                       "Code in answers gets **Insert at cursor** / **Replace selection** / **Copy** links. "
-                      "The ⚙ button switches between Claude, Gemini (free key) and a local model (free, private).")
-            if not aiproviders.ready():
+                      "The ⚙ button switches between Claude, Gemini (free key), a local model (free, private), and "
+                      "other AIs like ChatGPT.")
+            if not aiproviders.ready() and aiproviders.provider() == aiproviders.OTHER:
+                md.append("\n\n**First, set it up:** click ⚙ above and pick a service (or enter its server URL).")
+            elif not aiproviders.ready():
                 md.append("\n\n**First, add your API key:** click ⚙ above. "
                           + ("[Get a free key at aistudio.google.com](https://aistudio.google.com/apikey)"
                              if aiproviders.provider() == "Gemini" else

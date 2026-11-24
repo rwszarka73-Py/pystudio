@@ -20,7 +20,16 @@ from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequ
 GEMINI_URL = os.environ.get("PYSTUDIO_GEMINI_URL", "https://generativelanguage.googleapis.com")
 OLLAMA_URL = os.environ.get("PYSTUDIO_OLLAMA_URL", "http://127.0.0.1:11434")
 
-PROVIDERS = ["Claude", "Gemini", "Local (Ollama)"]
+OTHER = "Other (OpenAI-compatible)"
+PROVIDERS = ["Claude", "Gemini", "Local (Ollama)", OTHER]
+# Services that take OpenAI's request format: (name shown, server URL, a model to start with)
+OTHER_PRESETS = [("ChatGPT (OpenAI)", "https://api.openai.com/v1", "gpt-4o-mini"),
+                 ("OpenRouter", "https://openrouter.ai/api/v1", "openai/gpt-4o-mini"),
+                 ("Groq", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile"),
+                 ("Mistral", "https://api.mistral.ai/v1", "mistral-small-latest"),
+                 ("DeepSeek", "https://api.deepseek.com/v1", "deepseek-chat"),
+                 ("xAI (Grok)", "https://api.x.ai/v1", "grok-3-mini"),
+                 ("LM Studio (local)", "http://localhost:1234/v1", "")]
 GEMINI_MODELS = ["gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest"]
 OLLAMA_MODELS = ["qwen2.5-coder:3b", "qwen2.5-coder:7b"]
 OLLAMA_SUGGESTED = [("qwen2.5-coder:3b", "about 2 GB - quickest on a laptop"),
@@ -36,11 +45,14 @@ def provider():
 
 def short_name(p=None):
     p = p or provider()
+    if p == OTHER:
+        n = (QSettings().value("otherName", "") or "").split(" (")[0].strip()
+        return n or "AI"
     return "Ollama" if p.startswith("Local") else p
 
 
 def model_key(p=None):
-    return {"Claude": "claudeModel", "Gemini": "geminiModel"}.get(p or provider(), "ollamaModel")
+    return {"Claude": "claudeModel", "Gemini": "geminiModel", OTHER: "otherModel"}.get(p or provider(), "ollamaModel")
 
 
 def default_models(p=None):
@@ -48,6 +60,10 @@ def default_models(p=None):
     if p == "Claude":
         from .assistant import MODELS
         return list(MODELS)
+    if p == OTHER:
+        saved = [m for m in (QSettings().value("otherModels", "") or "").split("\n") if m]
+        cur = QSettings().value("otherModel", "") or ""
+        return ([cur] if cur and cur not in saved else []) + saved or ["gpt-4o-mini"]
     return list(GEMINI_MODELS if p == "Gemini" else OLLAMA_MODELS)
 
 
@@ -72,9 +88,20 @@ def gemini_key():
     return keystore.get("geminiApiKey") or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY", "")
 
 
+def other_url():
+    return (QSettings().value("otherUrl", "") or "").strip().rstrip("/")
+
+
+def other_key():
+    from . import keystore
+    return keystore.get("otherApiKey") or os.environ.get("OPENAI_API_KEY", "")
+
+
 def ready(p=None):
     """Can it be used without asking for anything? (Local: assumed; a connection error explains.)"""
     p = p or provider()
+    if p == OTHER:
+        return bool(other_url())
     if p == "Claude":
         from .assistant import api_key
         return bool(api_key())
@@ -88,6 +115,8 @@ def make_client(parent=None, p=None):
     if p == "Claude":
         from .assistant import ClaudeClient
         return ClaudeClient(parent)
+    if p == OTHER:
+        return OpenAICompatClient(parent)
     return GeminiClient(parent) if p == "Gemini" else OllamaClient(parent)
 
 
@@ -291,8 +320,8 @@ class OllamaClient(_StreamClient):
     def _unreachable(self, err, text):
         if err in (QNetworkReply.ConnectionRefusedError, QNetworkReply.HostNotFoundError):
             if not shutil.which("ollama"):
-                return ("Ollama isn't installed. Open the Assistant's settings (gear button) > Install Ollama - "
-                        "it's free and runs on this computer.")
+                return ("Ollama isn't installed. Open the Assistant's settings (gear button), AI = Local, and click "
+                        "Install Ollama and Download the Model - it's free and runs on this computer.")
             return "Ollama isn't running. Start it from a terminal with:  ollama serve   (or restart the computer)."
         return f"Couldn't reach Ollama: {text}"
 
@@ -307,6 +336,114 @@ class OllamaClient(_StreamClient):
                 pass
             r.deleteLater()
             callback(ids)
+        r.finished.connect(done)
+
+
+# ============================================================ any OpenAI-compatible server
+class OpenAICompatClient(_StreamClient):
+    """ChatGPT, OpenRouter, Groq, Mistral, DeepSeek, xAI, LM Studio... - anything that takes OpenAI's
+    POST /chat/completions with "stream": true (SSE, choices[0].delta.content)."""
+
+    @property
+    def NAME(self):
+        return short_name(OTHER)
+
+    def send(self, messages, system="", model=None, max_tokens=4096):
+        msgs = ([{"role": "system", "content": system}] if system else []) + \
+            [{"role": m.get("role", "user"), "content": _text_of(m.get("content", ""))} for m in messages]
+        self._model = model or model_name(OTHER)
+        self._body = {"model": self._model, "messages": msgs, "stream": True, "max_tokens": max_tokens}
+        self._retried = False
+        self._go()
+
+    def _go(self):
+        h = {"Authorization": f"Bearer {other_key()}"} if other_key() else {}
+        if "openrouter.ai" in other_url():
+            h.update({"HTTP-Referer": "https://github.com/rwszarka73-py/pystudio", "X-Title": "PyStudio"})
+        self._post(f"{other_url()}/chat/completions", self._body, h)
+
+    def _on_finished(self):
+        # newer OpenAI models want max_completion_tokens instead of max_tokens: retry once that way
+        r = self.reply
+        if r is not None and not self._retried:
+            self._on_read()
+            body = self._err.decode("utf-8", "replace")
+            if self._status() == 400 and "max_tokens" in body and "max_completion_tokens" in body:
+                self._retried = True
+                self._body["max_completion_tokens"] = self._body.pop("max_tokens")
+                self.reply = None
+                r.deleteLater()
+                self._go()
+                return
+        super()._on_finished()
+
+    def _parse(self, final=False):
+        buf = self._buf.replace(b"\r\n", b"\n")
+        lines = buf.split(b"\n")
+        self._buf = b"" if final else lines.pop()
+        for line in lines:
+            line = line.decode("utf-8", "replace").strip()
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                obj = json.loads(data)
+            except ValueError:
+                continue
+            if obj.get("error"):
+                self._err = json.dumps(obj).encode()
+                continue
+            for ch in obj.get("choices", []) or []:
+                self._piece((ch.get("delta") or {}).get("content") or "")
+
+    def _explain(self, status, body):
+        try:
+            e = json.loads(body)
+            e = e[0] if isinstance(e, list) else e
+            err = e.get("error", e)
+            msg = err.get("message", body) if isinstance(err, dict) else str(err)
+        except (ValueError, AttributeError):
+            msg = body[:500]
+        name = short_name(OTHER)
+        hint = {401: "The API key was rejected - check it in the Assistant's settings (gear button).",
+                403: f"{name} refused this key or model - check the key's permissions on the service's site.",
+                404: "Unknown model or wrong server URL - click the refresh button next to the model list, or "
+                     "check the URL in the Assistant's settings.",
+                402: "The account is out of credits - add some on the service's site.",
+                429: "Too many requests, or the account's limit or credits ran out - wait a bit, or check the "
+                     "service's site."}.get(status, "")
+        return f"{name} error {status or ''}: {msg}" + (f"\n{hint}" if hint else "")
+
+    def _unreachable(self, err, text):
+        if err in (QNetworkReply.ConnectionRefusedError, QNetworkReply.HostNotFoundError):
+            return (f"Couldn't reach {other_url() or 'the server'} - check the server URL in the Assistant's "
+                    "settings" + (" (is LM Studio's server started?)" if "localhost" in other_url() or
+                                  "127.0.0.1" in other_url() else "") + ".")
+        return f"Couldn't reach {short_name(OTHER)}: {text}"
+
+    def list_models(self, callback):
+        req = QNetworkRequest(QUrl(f"{other_url()}/models"))
+        if other_key():
+            req.setRawHeader(b"Authorization", f"Bearer {other_key()}".encode())
+        r = self.net.get(req)
+
+        def done():
+            ids = []
+            try:
+                obj = json.loads(bytes(r.readAll()).decode("utf-8"))
+                for m in (obj.get("data", obj.get("models", [])) if isinstance(obj, dict) else obj):
+                    mid = m.get("id") or m.get("name") if isinstance(m, dict) else str(m)
+                    if mid and not any(x in mid.lower() for x in ("embed", "tts", "whisper", "dall-e", "moderation",
+                                                                  "transcribe", "image", "audio", "realtime")):
+                        ids.append(mid)
+            except (ValueError, AttributeError, TypeError):
+                pass
+            r.deleteLater()
+            if ids:
+                QSettings().setValue("otherModels", "\n".join(sorted(set(ids))))
+            callback(sorted(set(ids)))
         r.finished.connect(done)
 
 
