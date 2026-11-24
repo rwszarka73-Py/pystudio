@@ -363,6 +363,9 @@ class GitChangesPanel(QWidget):
             top.addWidget(b)
         self.info = QLabel()
         self.info.setStyleSheet("color: #aaaaaa; padding: 0 2px;")
+        self.b_publish = QPushButton("Publish to GitHub")
+        self.b_publish.setToolTip("Creates a GitHub repository named after the project and uploads it")
+        self.b_publish.clicked.connect(self.publish_github)
         self.message = QPlainTextEdit()
         self.message.setPlaceholderText("Enter a message <Required>")
         self.message.setMaximumHeight(70)
@@ -389,6 +392,7 @@ class GitChangesPanel(QWidget):
         ml.setContentsMargins(4, 4, 4, 4)
         ml.addLayout(top)
         ml.addWidget(self.info)
+        ml.addWidget(self.b_publish, 0, Qt.AlignLeft)
         ml.addWidget(self.message)
         ml.addWidget(self.b_commit, 0, Qt.AlignLeft)
         ml.addWidget(self.tree, 1)
@@ -437,7 +441,8 @@ class GitChangesPanel(QWidget):
         self._filling = False
         up = st.get("upstream")
         parts = [f"↑{st.get('ahead', 0)} ↓{st.get('behind', 0)}  {up}" if up else
-                 ("no remote - ⋯ > Add Remote" if not g.remotes() else "not pushed yet")]
+                 ("Not on GitHub yet" if not g.remotes() else "not pushed yet")]
+        self.b_publish.setVisible(not g.remotes())
         self.info.setText("  ".join(parts))
         conflict_codes = {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
         conflicted = [f for f in st.get("files", []) if f[0] + f[1] in conflict_codes]
@@ -611,7 +616,23 @@ class GitChangesPanel(QWidget):
     def _need_remote(self):
         if self.git.remotes():
             return True
-        return self.add_remote()
+        choice = self._choose_remote()
+        if choice == "publish":
+            self.publish_github()      # publishing pushes, so there's nothing left to do here
+            return False
+        return self.add_remote() if choice == "url" else False
+
+    def _choose_remote(self):
+        box = QMessageBox(QMessageBox.Question, "No remote", "This project isn't on GitHub (or another server) yet.",
+                          QMessageBox.Cancel, self)
+        b_pub = box.addButton("Publish to GitHub", QMessageBox.AcceptRole)
+        b_url = box.addButton("Enter a URL...", QMessageBox.ActionRole)
+        box.exec()
+        return {b_pub: "publish", b_url: "url"}.get(box.clickedButton())
+
+    def publish_github(self):
+        from . import ghpublish
+        ghpublish.publish(self)
 
     def add_remote(self):
         url, ok = QInputDialog.getText(
@@ -671,7 +692,8 @@ class GitChangesPanel(QWidget):
         m.addAction("View History", lambda: self.show_history())
         m.addAction("Refresh", self.refresh)
         m.addSeparator()
-        m.addAction("Add Remote...", self.add_remote)
+        m.addAction("Publish to GitHub...", self.publish_github)
+        m.addAction("Add Remote (enter a URL)...", self.add_remote)
         m.addSeparator()
         a = m.addAction("Abort Merge", self.abort_merge)
         m.aboutToShow.connect(lambda a=a: a.setVisible(self.git.merging()))

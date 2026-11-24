@@ -515,7 +515,7 @@ class PullRequestsWindow(QWidget):
                              "reviewDecision"], self.cwd())
         if code != 0:
             hint = ("Sign in once in the Terminal:  gh auth login" if "auth" in (err + out).lower() else
-                    "Is this repository on GitHub? (Git Changes > ⋯ > Add Remote)")
+                    "Is this repository on GitHub? (Git Changes > Publish to GitHub)")
             self.msg.setText(((err or out).strip().splitlines() or ["gh failed"])[-1] + "  - " + hint)
             self._enable()
             return
