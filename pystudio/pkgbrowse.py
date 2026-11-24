@@ -1,11 +1,12 @@
 """Package Manager Browse and Updates tabs (VS: NuGet Browse / Updates)."""
-import json
 import re
+import time
 import webbrowser
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QPushButton, QSplitter,
-                               QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMessageBox,
+                               QPushButton, QSplitter, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
 from . import pypi
 
@@ -219,27 +220,48 @@ class BrowseTab(QWidget):
 
 
 class UpdatesTab(QWidget):
-    """Installed packages with a newer version on PyPI (pip list --outdated)."""
+    """Like NuGet's Updates tab: packages with a newer version on PyPI. Loads by itself when the Packages page
+    opens; only packages you installed are listed unless "Show dependencies too" is checked."""
 
     def __init__(self, page):
         super().__init__()
+        from . import pkgupdates
         self.page = page
-        self.status = QLabel("Click Check for Updates.")
+        self.rows = []
+        self.check_job = pkgupdates.UpdateCheck(self)
+        self.check_job.done.connect(self._got)
+        self.check_job.failed.connect(lambda t: self.status.setText("Couldn't check: " + t))
+        self.status = QLabel("")
         self.status.setStyleSheet("color: #9a9a9a;")
+        self.status.setWordWrap(True)
         self.list = QTreeWidget()
-        self.list.setHeaderLabels(["Package", "Installed", "Latest"])
+        self.list.setHeaderLabels(["Package", "Installed", "Latest", ""])
         self.list.setRootIsDecorated(False)
         self.list.setSelectionMode(QTreeWidget.ExtendedSelection)
-        self.list.setColumnWidth(0, 220)
-        b_check = QPushButton("Check for Updates")
-        b_check.clicked.connect(self.check)
+        self.list.setColumnWidth(0, 200)
+        self.list.setColumnWidth(1, 90)
+        self.list.setColumnWidth(2, 90)
+        self.ck_deps = QCheckBox("Show dependencies too")
+        self.ck_deps.setToolTip("Packages that other packages installed, and pip's own tools. Updating these "
+                                "yourself can break the package that needs them - usually leave them alone.")
+        self.ck_deps.toggled.connect(lambda _on: self._fill())
+        self.ck_auto = QCheckBox("Check when a project opens (once a day)")
+        self.ck_auto.setChecked(pkgupdates.auto_check_on())
+        self.ck_auto.toggled.connect(lambda on: QSettings().setValue("pkgUpdateAutoCheck", on))
+        self.b_check = QPushButton("Check Now")
+        self.b_check.clicked.connect(self.check)
         self.b_sel = QPushButton("Update Selected")
         self.b_sel.clicked.connect(lambda: self.update([it.text(0) for it in self.list.selectedItems()]))
         self.b_all = QPushButton("Update All")
+        self.b_all.setToolTip("Updates every package in the list")
         self.b_all.clicked.connect(lambda: self.update([self.list.topLevelItem(i).text(0)
                                                         for i in range(self.list.topLevelItemCount())]))
+        opts = QHBoxLayout()
+        opts.addWidget(self.ck_deps)
+        opts.addStretch()
+        opts.addWidget(self.ck_auto)
         row = QHBoxLayout()
-        row.addWidget(b_check)
+        row.addWidget(self.b_check)
         row.addStretch()
         row.addWidget(self.b_sel)
         row.addWidget(self.b_all)
@@ -247,30 +269,87 @@ class UpdatesTab(QWidget):
         lay.setContentsMargins(0, 4, 0, 0)
         lay.addWidget(self.status)
         lay.addWidget(self.list, 1)
+        lay.addLayout(opts)
         lay.addLayout(row)
+
+    def load(self):
+        """The Packages page opened: show the last check right away, then check again in the background."""
+        from . import pkgupdates
+        py = self.page._python()
+        if not py:
+            self.status.setText("")
+            return
+        rows, t = pkgupdates.cached(py)
+        if rows is not None:
+            self.rows = rows
+            self._fill(checked_at=t)
+        self.check()
 
     def check(self):
         py = self.page._python()
         if not py:
             return
-        self.status.setText("Checking PyPI for newer versions...")
-        self.list.clear()
+        if self.check_job.busy:
+            return
+        self.status.setText("Checking PyPI for newer versions..." + (" (showing the last check meanwhile)"
+                                                                     if self.rows else ""))
+        self.b_check.setEnabled(False)
+        self.check_job.start(py)
 
-        def done(code, out):
-            try:
-                rows = json.loads(out[out.index("["):out.rindex("]") + 1]) if "[" in out else []
-            except ValueError:
-                rows = []
-            for r in sorted(rows, key=lambda r: r["name"].lower()):
-                self.list.addTopLevelItem(QTreeWidgetItem([r["name"], r.get("version", ""), r.get("latest_version", "")]))
-            self.status.setText(f"{len(rows)} update(s) available." if rows else
-                                ("Everything is up to date." if code == 0 else "Couldn't check (internet needed)."))
-        self.page._run(py, ["-m", "pip", "list", "--outdated", "--format", "json", "--disable-pip-version-check"],
-                       done, quiet=True)
+    def _got(self, rows):
+        self.rows = rows
+        self._fill(checked_at=time.time())
+        win = self.page.parent().window() if self.page.parent() is not None else None
+        badge = getattr(win, "pkg_badge", None)
+        if badge is not None:
+            badge.refresh_from_cache()
+
+    def _fill(self, checked_at=None):
+        from . import pkgupdates
+        self.b_check.setEnabled(not self.check_job.busy)
+        mine = pkgupdates.counted(self.rows)
+        shown = self.rows if self.ck_deps.isChecked() else mine
+        self.list.clear()
+        for r in shown:
+            note = []
+            if pkgupdates.is_major(r):
+                note.append("major version - may need code changes")
+            if not r.get("top") or _norm(r["name"]) in pkgupdates.TOOLS:
+                note.append("dependency")
+            it = QTreeWidgetItem([r["name"], r["version"], r["latest"], ", ".join(note)])
+            if pkgupdates.is_major(r):
+                it.setForeground(3, QColor("#e5c07b"))
+            elif note:
+                for c in range(4):
+                    it.setForeground(c, QColor("#8a8a8a"))
+            self.list.addTopLevelItem(it)
+        others = len(self.rows) - len(mine)
+        when = ""
+        if checked_at:
+            mins = int((time.time() - checked_at) // 60)
+            when = "  (checked " + ("just now" if mins < 1 else f"{mins} min ago" if mins < 60 else
+                                    f"{mins // 60} h ago") + ")"
+        if mine:
+            text = f"{len(mine)} update{'s' if len(mine) != 1 else ''} for packages you installed."
+        else:
+            text = "Everything you installed is up to date."
+        if others and not self.ck_deps.isChecked():
+            text += f"  {others} dependenc{'ies have' if others != 1 else 'y has'} updates too (Show dependencies too)."
+        self.status.setText(text + when)
+        tabs = getattr(self.page, "pkg_tabs", None)
+        if tabs is not None and tabs.indexOf(self) >= 0:
+            tabs.setTabText(tabs.indexOf(self), f"Updates ({len(mine)})" if mine else "Updates")
 
     def update(self, names):
         py = self.page._python()
         if not names or not py:
+            return
+        from . import pkgupdates
+        major_ones = [r["name"] for r in self.rows if r["name"] in names and pkgupdates.is_major(r)]
+        if major_ones and QMessageBox.question(
+                self, "Update Packages", "These go to a new major version, which can change how they work, so "
+                "your code may need changes:\n\n  " + "\n  ".join(major_ones) + "\n\nUpdate anyway?") \
+                != QMessageBox.Yes:
             return
         self.page._run(py, ["-m", "pip", "install", "--upgrade", "--disable-pip-version-check", *names],
                        lambda code, _o: (self.page._log("Done." if code == 0 else f"pip exited with code {code}"),

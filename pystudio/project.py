@@ -177,7 +177,7 @@ class Project:
 class ProjectPropertiesDialog(QDialog):
     """VS-style project properties: Application, Debug, Resources, Settings, Packages, Publish."""
 
-    def __init__(self, project: Project, default_python, output=None, parent=None, page=0):
+    def __init__(self, project: Project, default_python, output=None, parent=None, page=0, tab=None):
         super().__init__(parent)
         self.p = project
         self.default_python = default_python
@@ -204,7 +204,9 @@ class ProjectPropertiesDialog(QDialog):
             self.pages.addWidget(widget)
             self.page_names.append(name)
         self.nav.currentRowChanged.connect(self.pages.setCurrentIndex)
-        self.nav.currentRowChanged.connect(lambda i: self.page_names[i] == "Packages" and self.refresh_packages())
+        self.nav.currentRowChanged.connect(lambda i: self.page_names[i] == "Packages" and self._packages_shown())
+        if tab == "Updates":
+            self.pkg_tabs.setCurrentWidget(self.pkg_updates)
         self.nav.setCurrentRow(self.page_names.index(page) if isinstance(page, str) else page)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
@@ -408,7 +410,7 @@ class ProjectPropertiesDialog(QDialog):
             elif not self.custom_python:
                 self.cb_interp.setCurrentIndex(0)
         if self.page_names[self.nav.currentRow()] == "Packages":
-            self.refresh_packages()
+            self._packages_shown()
 
     def _update_venv_status(self):
         exists = os.path.exists(os.path.join(self.p.root, ".venv", "bin", "python"))
@@ -609,6 +611,10 @@ class ProjectPropertiesDialog(QDialog):
         if not quiet:
             self._log(f"> {program} {' '.join(args)}")
         self.proc.start(program, args)
+
+    def _packages_shown(self):
+        self.refresh_packages()
+        self.pkg_updates.load()
 
     def refresh_packages(self):
         py = self._python()

@@ -863,6 +863,8 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         self.lbl_python = QLabel("")
         sb = self.statusBar()
         sb.addWidget(self.lbl_state, 1)
+        from .pkgupdates import StatusBadge
+        self.pkg_badge = StatusBadge(self)
         sb.addPermanentWidget(self.lbl_pos)
         sb.addPermanentWidget(self.lbl_python)
         self._update_python_label()
@@ -1836,14 +1838,16 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         self.proxy.show_all = self.b_showall.isChecked()
         self.proxy.invalidateFilter()
 
-    def project_properties(self, page=0):
+    def project_properties(self, page=0, tab=None):
         if self.project is None:
             QMessageBox.information(self, "Project Properties", "Open or create a project first.")
             return
         if isinstance(page, bool):   # from a clicked(bool) signal
             page = 0
-        dlg = ProjectPropertiesDialog(self.project, self.python, self.output, self, page=page)
-        if dlg.exec():
+        dlg = ProjectPropertiesDialog(self.project, self.python, self.output, self, page=page, tab=tab)
+        accepted = dlg.exec()
+        self.pkg_badge.project_changed(self.project.python(self.python) if self.project else None)
+        if accepted:
             self.project = Project(self.project.root)
             self.lang.extra_paths[self.project.root] = sln.all_references(self.project)
             self.lang.warmup(self._lang_context())
@@ -1963,6 +1967,7 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         self.lang.extra_paths[path] = sln.all_references(self.project) if self.project else []
         self._update_solution_view()
         self.server.set_project(self.project, self.project.python(self.python) if self.project else None)
+        self.pkg_badge.project_changed(self.project.python(self.python) if self.project else None)
         if self.project:
             mygen.write(self.project)
         self.a_publish.setText(f"&Publish {self.startup_project_name()}..." if self.project else "&Publish...")
@@ -2361,6 +2366,7 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         self.class_view.set_projects([])
         self.project_root = None
         self.project = None
+        self.pkg_badge.project_changed(None)
         self.proj_label.setText("  (no project)")
         self.server.set_project(None)
         self.git_panel.set_folder(None)
@@ -3771,6 +3777,7 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         self.runner.stop()
         self.session.stop()
         self.tests.shutdown()          # background pytest / Python Interactive processes
+        self.pkg_badge.check.cancel()  # a background package-update check
         self.terminal.close_all()
         for ed in self.editors():
             if hasattr(ed, "shutdown"):
