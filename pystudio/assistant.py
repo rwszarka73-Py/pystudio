@@ -248,21 +248,16 @@ class AssistantSettings(QDialog):
         self.l_ollama = QLabel()
         self.l_ollama.setWordWrap(True)
         fo.addRow("Status:", self.l_ollama)
-        self.b_install = QPushButton("Install Ollama...")
-        self.b_install.setToolTip("Runs Ollama's installer in PyStudio's Terminal (it asks for your password)")
-        self.b_install.clicked.connect(self.install_ollama)
-        fo.addRow("", self.b_install)
         self.cb_pull = QComboBox()
         for name, about in aiproviders.OLLAMA_SUGGESTED:
             self.cb_pull.addItem(f"{name}  ({about})", name)
         self.cb_pull.setEditable(False)
-        b_pull = QPushButton("Download Model")
-        b_pull.setToolTip("Downloads the model in PyStudio's Terminal (ollama pull), then it's in the model list")
-        b_pull.clicked.connect(self.pull_model)
-        hp = QHBoxLayout()
-        hp.addWidget(self.cb_pull, 1)
-        hp.addWidget(b_pull)
-        fo.addRow("Model:", hp)
+        fo.addRow("Model:", self.cb_pull)
+        self.b_setup = QPushButton()
+        self.b_setup.clicked.connect(self.set_up_local)
+        fo.addRow("", self.b_setup)
+        self.pending_command = None          # run in the Terminal after this window closes
+        self.pending_model = None
         self.pages.addWidget(po)
         self.cb_provider.currentIndexChanged.connect(self.pages.setCurrentIndex)
         self.pages.setCurrentIndex(self.cb_provider.currentIndex())
@@ -283,10 +278,12 @@ class AssistantSettings(QDialog):
 
     def check_ollama(self):
         if not aiproviders.ollama_installed():
-            self.l_ollama.setText("Ollama isn't installed yet.")
-            self.b_install.setEnabled(True)
+            self.l_ollama.setText("Ollama isn't installed yet. Pick a model and click the button: this window "
+                                  "closes, the Terminal asks for your password, then Ollama and the model are "
+                                  "installed. The Assistant tells you when it's ready.")
+            self.b_setup.setText("Install Ollama and Download the Model")
             return
-        self.b_install.setEnabled(False)
+        self.b_setup.setText("Download Model")
         self.l_ollama.setText("Ollama is installed. Checking its models...")
         c = aiproviders.OllamaClient(self)
 
@@ -300,39 +297,19 @@ class AssistantSettings(QDialog):
                 pass
         c.list_models(got)
 
-    def _terminal(self, command):
-        """Runs a command in PyStudio's Terminal, where you can watch it (and type your password)."""
-        win = self.parent().window() if self.parent() is not None else None
-        term = getattr(win, "terminal", None)
-        if term is None:
-            QMessageBox.information(self, "AI Assistant", f"Run this in a terminal:\n\n{command}")
-            return
-        t = term.new_terminal(os.path.expanduser("~"))
-        getattr(win, "terminal_dock", None) and (win.terminal_dock.show(), win.terminal_dock.raise_())
-
-        def go():
-            try:
-                os.write(t.master, (command + "\n").encode())
-            except (OSError, AttributeError, RuntimeError):
-                pass
-        QTimer.singleShot(700, go)
-
-    def install_ollama(self):
-        if QMessageBox.question(self, "Install Ollama", "Install Ollama from ollama.com? Its installer runs in "
-                                "PyStudio's Terminal and asks for your password. When it finishes, come back "
-                                "here and Download Model.") != QMessageBox.Yes:
-            return
-        self._terminal(aiproviders.INSTALL_OLLAMA)
-        self.l_ollama.setText("Installing in the Terminal... reopen these settings when it's done.")
-
-    def pull_model(self):
+    def set_up_local(self):
+        """Close this window (it would keep the Terminal from getting your password) and let the Assistant run
+        the install / download there and watch for the model."""
         name = self.cb_pull.currentData()
-        if not aiproviders.ollama_installed():
-            QMessageBox.information(self, "Download Model", "Install Ollama first (the button above).")
-            return
-        self._terminal(f"ollama pull {name}")
+        pull = f"ollama pull {name}"
+        if aiproviders.ollama_installed():
+            self.pending_command = pull
+        else:
+            self.pending_command = f"{aiproviders.INSTALL_OLLAMA} && {pull}"
+        self.pending_model = name
+        self.cb_provider.setCurrentText("Local (Ollama)")
         QSettings().setValue("ollamaModel", name)
-        self.l_ollama.setText(f"Downloading {name} in the Terminal... when it says success, it's ready.")
+        self.accept()
 
     def apply(self):
         s = QSettings()
@@ -422,8 +399,13 @@ class AssistantPanel(QWidget):
             quick.addWidget(b)
         v.addLayout(quick)
 
+        self.l_note = QLabel()
+        self.l_note.setWordWrap(True)
+        self.l_note.hide()
+        v.addWidget(self.l_note)
         self.input = _Input()
-        self.input.setPlaceholderText("Ask Claude about your code...  (Enter sends, Shift+Enter for a new line)")
+        self.input.setPlaceholderText(f"Ask {aiproviders.short_name()} about your code...  (Enter sends, "
+                                      "Shift+Enter for a new line)")
         self.input.setMaximumHeight(90)
         self.input.submit.connect(self.send)
         v.addWidget(self.input)
@@ -486,6 +468,75 @@ class AssistantPanel(QWidget):
             if aiproviders.provider() != before:
                 self.provider_changed()
             self._render()
+            if dlg.pending_command:
+                self.run_in_terminal(dlg.pending_command)
+                self.watch_ollama(dlg.pending_model)
+
+    def run_in_terminal(self, command):
+        """Runs a command in PyStudio's Terminal and puts the keyboard there (for the sudo password)."""
+        win = self.window()
+        term = getattr(win, "terminal", None)
+        if term is None:
+            QMessageBox.information(self, "AI Assistant", f"Run this in a terminal:\n\n{command}")
+            return
+        dock = getattr(win, "terminal_dock", None)
+        if dock is not None:
+            dock.show()
+            dock.raise_()
+        t = term.current() or term.new_terminal(os.path.expanduser("~"))
+
+        def go():
+            try:
+                os.write(t.master, (command + "\n").encode())
+                t.setFocus()
+                t.activateWindow()
+            except (OSError, AttributeError, RuntimeError):
+                pass
+        QTimer.singleShot(700, go)
+
+    def watch_ollama(self, name):
+        """Polls Ollama until the model is downloaded, then switches to it and says so."""
+        self._watch_for = name
+        self._watch_tries = 0
+        self.note(f"Setting up {name} in the Terminal - type your password there if it asks. A 2-5 GB download "
+                  "can take a while; this says when it's ready.")
+        if getattr(self, "_watch_timer", None) is None:
+            self._watch_timer = QTimer(self)
+            self._watch_timer.timeout.connect(self._watch_tick)
+        self._watch_timer.start(4000)
+
+    def _watch_tick(self):
+        self._watch_tries += 1
+        if self._watch_tries > 900:                       # an hour
+            self._watch_timer.stop()
+            self.note("")
+            return
+        if not aiproviders.ollama_installed():
+            return
+        name = self._watch_for
+
+        def got(ids):
+            try:
+                if self._watch_timer.isActive() and any(i == name or i == name + ":latest" or
+                                                        i.split(":")[0] == name for i in ids):
+                    self._watch_timer.stop()
+                    QSettings().setValue("aiProvider", "Local (Ollama)")
+                    QSettings().setValue("ollamaModel", name)
+                    self.provider_changed()
+                    self.note(f"✓ {name} is ready - ask away. (It runs on this computer, so the first answer "
+                              "takes a little longer while it loads.)", ok=True)
+                    win = self.window()
+                    win.statusBar().showMessage(f"Local AI model {name} is ready.", 10000)
+            except RuntimeError:
+                pass
+        if getattr(self, "_watch_client", None) is None:
+            self._watch_client = aiproviders.OllamaClient(self)
+        self._watch_client.list_models(got)
+
+    def note(self, text, ok=False):
+        self.l_note.setText(text)
+        self.l_note.setStyleSheet("color: %s; padding: 2px;" % ("#89d185" if ok else "#e5c07b"))
+        self.l_note.setVisible(bool(text))
 
     def _refresh_models(self):
         if not aiproviders.ready():
@@ -524,6 +575,8 @@ class AssistantPanel(QWidget):
         self.send(force_context=True, include_errors=(kind == "fix"))
 
     def send(self, force_context=False, include_errors=False):
+        if not (getattr(self, "_watch_timer", None) is not None and self._watch_timer.isActive()):
+            self.note("")
         text = self.input.toPlainText().strip()
         if not text or self.client.busy:
             return
