@@ -640,6 +640,20 @@ class TerminalPanel(QWidget):
     def current(self):
         return self.tabs.currentWidget()
 
+    def showEvent(self, e):
+        """Clicking the Terminal tab opens the first terminal by itself (Ctrl+` is only needed for more)."""
+        super().showEvent(e)
+        QTimer.singleShot(0, self._ensure_one)
+
+    def _ensure_one(self):
+        try:
+            if self.isVisible() and available() and self.tabs.count() == 0:
+                self.new_terminal()
+                t = self.current()
+                t is not None and t.setFocus()
+        except RuntimeError:          # closing
+            pass
+
     def terminals(self):
         return [self.tabs.widget(i) for i in range(self.tabs.count())]
 
