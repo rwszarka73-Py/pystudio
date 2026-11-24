@@ -1,14 +1,14 @@
-"""Inline AI suggestions (Copilot-style "ghost text") from Claude.
+"""Inline AI suggestions (Copilot-style "ghost text") from the Assistant's AI (Claude, Gemini or local).
 
 When you pause typing at the end of a line, Claude suggests what comes next; it shows in gray after the
 cursor. Tab accepts it, Ctrl+Right accepts one word, Esc (or typing something else) dismisses it.
 Alt+\\ asks for a suggestion right now. Uses the Claude Assistant's API key; turn the automatic
 suggestions on or off in Tools > Options (they use API credits)."""
-import json
 import re
 
-from PySide6.QtCore import QByteArray, QObject, QSettings, QTimer, QUrl
-from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest
+from PySide6.QtCore import QObject, QSettings, QTimer
+
+from . import aiproviders
 
 DELAY_MS = 750
 PREFIX_CHARS = 4000
@@ -50,12 +50,11 @@ def clean(text, line_before):
 class GhostCompleter(QObject):
     """One per code editor."""
 
-    def __init__(self, editor, api_url, api_key_fn, versions):
+    def __init__(self, editor, *_old_args):
         super().__init__(editor)
         self.ed = editor
-        self.api_url, self.api_key_fn, self.versions = api_url, api_key_fn, versions
-        self.net = QNetworkAccessManager(self)
-        self.reply = None
+        self.client = None
+        self._provider = None
         self._req_state = None
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
@@ -70,7 +69,7 @@ class GhostCompleter(QObject):
             return
         self.ed.clear_ghost()
         self.cancel()
-        if enabled() and self.api_key_fn() and not self.ed.isReadOnly() and self._at_good_spot():
+        if enabled() and aiproviders.ready() and not self.ed.isReadOnly() and self._at_good_spot():
             self.timer.start()
 
     def _at_good_spot(self):
@@ -83,8 +82,7 @@ class GhostCompleter(QObject):
     def request(self, manual=False):
         """Ask Claude for a suggestion at the cursor (Alt+\\ = manual)."""
         self.timer.stop()
-        key = self.api_key_fn()
-        if not key or (not manual and not self._at_good_spot()):
+        if not aiproviders.ready() or (not manual and not self._at_good_spot()):
             return
         self.cancel()
         doc = self.ed.toPlainText()
@@ -94,38 +92,30 @@ class GhostCompleter(QObject):
         name = (self.ed.path or "untitled.py").split("/")[-1]
         prompt = (f"File: {name}\n<code_before_cursor>\n{before}</code_before_cursor>\n"
                   f"<code_after_cursor>\n{after}\n</code_after_cursor>\nText to insert at the cursor:")
-        payload = {"model": model(), "max_tokens": 300, "system": SYSTEM,
-                   "messages": [{"role": "user", "content": prompt}]}
-        req = QNetworkRequest(QUrl(self.api_url().rstrip("/") + "/v1/messages"))
-        req.setRawHeader(b"x-api-key", key.encode())
-        req.setRawHeader(b"anthropic-version", self.versions[0].encode())
-        req.setRawHeader(b"content-type", b"application/json")
+        p = aiproviders.provider()
+        if self.client is None or self._provider != p:
+            if self.client is not None:
+                self.client.deleteLater()
+            self.client = aiproviders.make_client(self, p)
+            self.client.finished.connect(self._done)
+            self._provider = p
         self._req_state = (self.ed.document().revision(), pos, c.block().text()[:c.positionInBlock()])
-        self.reply = self.net.post(req, QByteArray(json.dumps(payload).encode()))
-        self.reply.finished.connect(self._done)
+        self.client.send([{"role": "user", "content": prompt}], SYSTEM,
+                         model=model() if p == "Claude" else aiproviders.inline_model(p), max_tokens=300)
+
+    @property
+    def reply(self):
+        return self.client.reply if self.client is not None else None
 
     def cancel(self):
-        if self.reply is not None:
-            r, self.reply = self.reply, None
-            r.finished.disconnect()
-            r.abort()
-            r.deleteLater()
+        if self.client is not None:
+            self.client.cancel()
 
-    def _done(self):
-        r, self.reply = self.reply, None
-        if r is None:
-            return
-        data = bytes(r.readAll())
-        r.deleteLater()
+    def _done(self, text):
         state = self._req_state
         c = self.ed.textCursor()
         if state is None or self.ed.document().revision() != state[0] or c.position() != state[1]:
             return                                       # you kept typing: this answer is stale
-        try:
-            obj = json.loads(data.decode("utf-8"))
-            text = "".join(b.get("text", "") for b in obj.get("content", []) if b.get("type") == "text")
-        except (ValueError, AttributeError):
-            return
         text = clean(text, state[2])
         if text:
             self.ed.show_ghost(text)

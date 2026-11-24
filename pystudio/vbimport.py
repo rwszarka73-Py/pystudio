@@ -1062,6 +1062,6 @@ def import_project(vbproj, dest_root, project_name=None):
             report.append(f"  {r} -> {stem}.py")
     report += ["", f"Event handlers are wired up; the {lang} code is inside each handler as comments.",
                "Translate it to Python (self.ui.Label1.setText(...) instead of Label1.Text = ...), or use "
-               "the Claude Assistant's Translate button."]
+               "the AI Assistant's Translate button."]
     _write(os.path.join(dest_root, "IMPORT_REPORT.txt"), "\n".join(report) + "\n")
     return [p for p in opened if p.endswith(".ui")][:1] + [p for p in opened if p.endswith(".py")][:1], report

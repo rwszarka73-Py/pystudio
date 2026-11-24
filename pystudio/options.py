@@ -74,7 +74,7 @@ class OptionsDialog(QDialog):
         self.ck_ghost = QCheckBox("Inline suggestions from Claude as you type (Tab accepts; uses API credits)")
         self.ck_ghost.setChecked(_ghost_on())
         self.ck_ghost.setToolTip("Gray suggestions after the cursor when you pause typing. Alt+\\ asks for one "
-                                 "any time, even with this off. Needs the Claude Assistant's API key.")
+                                 "any time, even with this off. Uses the AI Assistant's AI (Claude, Gemini or local).")
         f.addRow("", self.ck_ghost)
         from . import analysis
         self.ck_ruff = QCheckBox("Ruff: find likely bugs as you type (Error List, squiggles, Ctrl+. fixes)")

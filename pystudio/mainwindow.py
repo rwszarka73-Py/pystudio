@@ -560,7 +560,8 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         self.a_run_sel_tests = self._act("Run &Selected Tests", lambda: (self.show_tests(), self.tests.run_selected()), "Ctrl+R, T")
         self.a_debug_tests = self._act("&Debug All Tests", lambda: self.debug_tests(list(self.tests.nodes)), "Ctrl+R, Ctrl+A")
         self.a_add_test = self._act("Add Unit &Test...", self.add_unit_test)
-        self.a_help = self._act("&View Help", self.show_help, "F1")
+        self.a_help = self._act("&Help on Word Under Cursor", self.show_help, "F1")
+        self.a_help.setToolTip("F1: the documentation for the word at the cursor, or the selected control")
         self.a_add_dialog = self._act("Add &Dialog...", lambda: self.add_item_dialog("Dialog"))
         self.a_add_uc = self._act("Add &User Control...", lambda: self.add_item_dialog("User Control"))
         self.a_add_class = self._act("Add &Class...", lambda: self.add_item_dialog("Class"))
@@ -3232,6 +3233,11 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         else:
             QMessageBox.information(self, "PyStudio Guide", f"README.pdf wasn't found next to PyStudio ({README}).")
 
+    def _help_hint(self, text=None):
+        self.statusBar().showMessage(text or "F1 looks up the word at the cursor: put the cursor on a word in the code "
+                                     "(or select a control in a form), then press F1. Help > PyStudio Guide covers "
+                                     "PyStudio itself.", 8000)
+
     def show_help(self):
         """F1: docs for the word under the cursor (editor) or the selected control (designer)."""
         from . import helpdocs
@@ -3247,17 +3253,17 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
             elif tool in M.TOOLS and M.TOOLS[tool][0].startswith("Q"):
                 self._open_url(helpdocs.qt_url("QtWidgets", M.TOOLS[tool][0]))
             else:
-                self.open_readme()
+                self._help_hint(f"There's no help page for a {tool}. Help > PyStudio Guide covers PyStudio itself.")
             return
         ed = self.current_editor()
         if ed is None:
-            self.open_readme()
+            self._help_hint()
             return
         c = ed.textCursor()
         c.select(QTextCursor.WordUnderCursor)
         word = c.selectedText().strip()
         if not word or not (word.isidentifier()):
-            self.open_readme()
+            self._help_hint()
             return
         url = helpdocs.url_for("", word)
         if url:

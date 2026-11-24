@@ -15,10 +15,10 @@ from PySide6.QtCore import QByteArray, QObject, QSettings, Qt, QTimer, QUrl, Sig
 from PySide6.QtGui import QDesktopServices, QTextCursor
 from PySide6.QtNetwork import QNetworkAccessManager, QNetworkReply, QNetworkRequest
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QPlainTextEdit, QPushButton, QTextBrowser,
+                               QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit, QPushButton, QTextBrowser,
                                QToolButton, QVBoxLayout, QWidget)
 
-from . import theme
+from . import aiproviders, theme
 
 API_URL = os.environ.get("PYSTUDIO_CLAUDE_URL", "https://api.anthropic.com")
 API_VERSIONS = ["2023-06-01", "2026-10-21"]      # tried in order if the API rejects the version
@@ -159,7 +159,7 @@ class ClaudeClient(QObject):
             msg = json.loads(body).get("error", {}).get("message", body)
         except ValueError:
             msg = body[:500]
-        hints = {401: "The API key was rejected - check it in the Claude Assistant's settings (gear button).",
+        hints = {401: "The API key was rejected - check it in the AI Assistant's settings (gear button).",
                  403: "This API key isn't allowed to do that.",
                  404: "Unknown model - pick another in the model list (or click Refresh).",
                  429: "Rate limited or out of credits - wait a moment, or check console.anthropic.com.",
@@ -184,39 +184,162 @@ class ClaudeClient(QObject):
 
 # ============================================================ settings dialog
 class AssistantSettings(QDialog):
+    """Which AI (Claude / Gemini / local), its key, and - for the local one - installing Ollama and models."""
+
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Claude Assistant Settings")
-        f = QFormLayout(self)
+        from PySide6.QtWidgets import QStackedWidget, QWidget as _W
         from . import keystore
+        self.setWindowTitle("AI Assistant Settings")
+        self.setMinimumWidth(560)
+        v = QVBoxLayout(self)
+        f = QFormLayout()
+        self.cb_provider = QComboBox()
+        self.cb_provider.addItems(aiproviders.PROVIDERS)
+        self.cb_provider.setCurrentText(aiproviders.provider())
+        f.addRow("AI:", self.cb_provider)
+        v.addLayout(f)
+        self.pages = QStackedWidget()
+        v.addWidget(self.pages)
+
+        def key_row(form, edit, placeholder):
+            edit.setEchoMode(QLineEdit.Password)
+            edit.setPlaceholderText(placeholder)
+            show = QCheckBox("Show")
+            show.toggled.connect(lambda on: edit.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password))
+            row = QHBoxLayout()
+            row.addWidget(edit, 1)
+            row.addWidget(show)
+            form.addRow("API key:", row)
+
+        def note(form, html):
+            lab = QLabel(html)
+            lab.setOpenExternalLinks(True)
+            lab.setWordWrap(True)
+            form.addRow(lab)
+            return lab
+        # Claude
+        pc = _W()
+        fc = QFormLayout(pc)
+        fc.setContentsMargins(0, 0, 0, 0)
         self.e_key = QLineEdit(keystore.get("claudeApiKey"))
-        self.e_key.setEchoMode(QLineEdit.Password)
-        self.e_key.setPlaceholderText("sk-ant-...  (or set ANTHROPIC_API_KEY)")
-        self.e_key.setMinimumWidth(380)
-        show = QCheckBox("Show")
-        show.toggled.connect(lambda on: self.e_key.setEchoMode(QLineEdit.Normal if on else QLineEdit.Password))
-        row = QHBoxLayout()
-        row.addWidget(self.e_key)
-        row.addWidget(show)
-        f.addRow("API key:", row)
-        link = QLabel('Get a key at <a href="https://console.anthropic.com/settings/keys">console.anthropic.com</a> '
-                      "(Claude API usage is billed to that account).<br>The key is stored in "
-                      f"{keystore.where()}.")
-        link.setOpenExternalLinks(True)
-        link.setWordWrap(True)
-        f.addRow(link)
+        key_row(fc, self.e_key, "sk-ant-...  (or set ANTHROPIC_API_KEY)")
+        note(fc, 'Get a key at <a href="https://console.anthropic.com/settings/keys">console.anthropic.com</a>. '
+                 "Claude API use is paid per use (prepaid credits), separately from a Claude subscription.")
+        self.pages.addWidget(pc)
+        # Gemini
+        pg = _W()
+        fg = QFormLayout(pg)
+        fg.setContentsMargins(0, 0, 0, 0)
+        self.e_gkey = QLineEdit(keystore.get("geminiApiKey"))
+        key_row(fg, self.e_gkey, "AIza...  (or set GEMINI_API_KEY)")
+        note(fg, 'Get a <b>free</b> key at <a href="https://aistudio.google.com/apikey">aistudio.google.com/apikey</a> '
+                 "(sign in with a Google account, Create API key). The free tier has per-minute and daily limits. "
+                 "<b>Google may use what you send on the free tier to improve its products</b> - keep work code "
+                 "and data out of it (use the local model for those).")
+        self.pages.addWidget(pg)
+        # Local (Ollama)
+        po = _W()
+        fo = QFormLayout(po)
+        fo.setContentsMargins(0, 0, 0, 0)
+        note(fo, "Runs a model on this computer with <b>Ollama</b>: free, private (nothing leaves the machine), no "
+                 "key. It's smaller and slower than Claude or Gemini - on a laptop without a graphics card, "
+                 "expect answers in tens of seconds.")
+        self.l_ollama = QLabel()
+        self.l_ollama.setWordWrap(True)
+        fo.addRow("Status:", self.l_ollama)
+        self.b_install = QPushButton("Install Ollama...")
+        self.b_install.setToolTip("Runs Ollama's installer in PyStudio's Terminal (it asks for your password)")
+        self.b_install.clicked.connect(self.install_ollama)
+        fo.addRow("", self.b_install)
+        self.cb_pull = QComboBox()
+        for name, about in aiproviders.OLLAMA_SUGGESTED:
+            self.cb_pull.addItem(f"{name}  ({about})", name)
+        self.cb_pull.setEditable(False)
+        b_pull = QPushButton("Download Model")
+        b_pull.setToolTip("Downloads the model in PyStudio's Terminal (ollama pull), then it's in the model list")
+        b_pull.clicked.connect(self.pull_model)
+        hp = QHBoxLayout()
+        hp.addWidget(self.cb_pull, 1)
+        hp.addWidget(b_pull)
+        fo.addRow("Model:", hp)
+        self.pages.addWidget(po)
+        self.cb_provider.currentIndexChanged.connect(self.pages.setCurrentIndex)
+        self.pages.setCurrentIndex(self.cb_provider.currentIndex())
+        f2 = QFormLayout()
         self.cb_files = QCheckBox("Send the current file with each question")
         self.cb_files.setChecked(QSettings().value("claudeSendFile", True, type=bool))
-        f.addRow(self.cb_files)
+        f2.addRow(self.cb_files)
+        kl = QLabel(f"Keys are stored in {keystore.where()}, never in your projects or settings exports.")
+        kl.setStyleSheet("color: #9d9d9d;")
+        kl.setWordWrap(True)
+        f2.addRow(kl)
+        v.addLayout(f2)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept)
         bb.rejected.connect(self.reject)
-        f.addRow(bb)
+        v.addWidget(bb)
+        self.check_ollama()
+
+    def check_ollama(self):
+        if not aiproviders.ollama_installed():
+            self.l_ollama.setText("Ollama isn't installed yet.")
+            self.b_install.setEnabled(True)
+            return
+        self.b_install.setEnabled(False)
+        self.l_ollama.setText("Ollama is installed. Checking its models...")
+        c = aiproviders.OllamaClient(self)
+
+        def got(ids):
+            try:
+                self.l_ollama.setText(("Installed. Downloaded models: " + ", ".join(ids)) if ids else
+                                      "Installed, but no model is downloaded yet - Download Model below. (If this "
+                                      "stays empty after downloading, Ollama isn't running: restart the computer "
+                                      "or run  ollama serve.)")
+            except RuntimeError:
+                pass
+        c.list_models(got)
+
+    def _terminal(self, command):
+        """Runs a command in PyStudio's Terminal, where you can watch it (and type your password)."""
+        win = self.parent().window() if self.parent() is not None else None
+        term = getattr(win, "terminal", None)
+        if term is None:
+            QMessageBox.information(self, "AI Assistant", f"Run this in a terminal:\n\n{command}")
+            return
+        t = term.new_terminal(os.path.expanduser("~"))
+        getattr(win, "terminal_dock", None) and (win.terminal_dock.show(), win.terminal_dock.raise_())
+
+        def go():
+            try:
+                os.write(t.master, (command + "\n").encode())
+            except (OSError, AttributeError, RuntimeError):
+                pass
+        QTimer.singleShot(700, go)
+
+    def install_ollama(self):
+        if QMessageBox.question(self, "Install Ollama", "Install Ollama from ollama.com? Its installer runs in "
+                                "PyStudio's Terminal and asks for your password. When it finishes, come back "
+                                "here and Download Model.") != QMessageBox.Yes:
+            return
+        self._terminal(aiproviders.INSTALL_OLLAMA)
+        self.l_ollama.setText("Installing in the Terminal... reopen these settings when it's done.")
+
+    def pull_model(self):
+        name = self.cb_pull.currentData()
+        if not aiproviders.ollama_installed():
+            QMessageBox.information(self, "Download Model", "Install Ollama first (the button above).")
+            return
+        self._terminal(f"ollama pull {name}")
+        QSettings().setValue("ollamaModel", name)
+        self.l_ollama.setText(f"Downloading {name} in the Terminal... when it says success, it's ready.")
 
     def apply(self):
         s = QSettings()
         from . import keystore
         keystore.set("claudeApiKey", self.e_key.text().strip())
+        keystore.set("geminiApiKey", self.e_gkey.text().strip())
+        s.setValue("aiProvider", self.cb_provider.currentText())
         s.setValue("claudeSendFile", self.cb_files.isChecked())
 
 
@@ -242,10 +365,8 @@ class AssistantPanel(QWidget):
     def __init__(self, context_provider=None):
         super().__init__()
         self.context_provider = context_provider     # callable -> {"path", "text", "selection", "errors", "form"}
-        self.client = ClaudeClient(self)
-        self.client.delta.connect(self._on_delta)
-        self.client.finished.connect(self._on_finished)
-        self.client.failed.connect(self._on_failed)
+        self.client = None
+        self._make_client()
         self.history = []          # API messages [{"role", "content"}]
         self.shown = []            # (role, markdown) as displayed
         self.codes = []            # code blocks in answers, for the Insert/Copy links
@@ -258,12 +379,14 @@ class AssistantPanel(QWidget):
         v = QVBoxLayout(self)
         v.setContentsMargins(4, 4, 4, 4)
         top = QHBoxLayout()
+        self.l_provider = QLabel()
+        self.l_provider.setStyleSheet("color: #9d9d9d;")
+        top.addWidget(self.l_provider)
         self.cb_model = QComboBox()
         self.cb_model.setEditable(True)
-        self.cb_model.addItems(MODELS)
-        self.cb_model.setCurrentText(model_name())
-        self.cb_model.setToolTip("Claude model (Sonnet: fast and smart; Opus: the most capable; Haiku: fastest)")
-        self.cb_model.currentTextChanged.connect(lambda t: QSettings().setValue("claudeModel", t.strip()))
+        self.cb_model.currentTextChanged.connect(
+            lambda t: t.strip() and QSettings().setValue(aiproviders.model_key(), t.strip()))
+        self._fill_models()
         top.addWidget(self.cb_model, 1)
         b_refresh = QToolButton()
         b_refresh.setText("⟳")
@@ -320,16 +443,52 @@ class AssistantPanel(QWidget):
         v.addLayout(bottom)
         self._render()
 
+    # ---------------------------------------------------------- provider
+    def _make_client(self):
+        if self.client is not None:
+            self.client.cancel()
+            self.client.deleteLater()
+        self.client = aiproviders.make_client(self)
+        self.client.delta.connect(self._on_delta)
+        self.client.finished.connect(self._on_finished)
+        self.client.failed.connect(self._on_failed)
+
+    def _fill_models(self):
+        p = aiproviders.provider()
+        self.cb_model.blockSignals(True)
+        self.cb_model.clear()
+        self.cb_model.addItems(aiproviders.default_models(p))
+        self.cb_model.setCurrentText(aiproviders.model_name(p))
+        self.cb_model.blockSignals(False)
+        self.l_provider.setText(aiproviders.short_name(p) + ":")
+        self.cb_model.setToolTip({"Claude": "Claude model (Sonnet: fast and smart; Opus: the most capable; Haiku: "
+                                            "fastest)",
+                                  "Gemini": "Gemini model (flash: fast, free tier; flash-lite: fastest; pro: "
+                                            "smartest, may not be free)"}.get(
+            p, "Local model (downloaded with Ollama; the gear button downloads more)"))
+        if hasattr(self, "input"):
+            self.input.setPlaceholderText(f"Ask {aiproviders.short_name(p)} about your code...  (Enter sends, "
+                                          "Shift+Enter for a new line)")
+
+    def provider_changed(self):
+        self.stop()
+        self._make_client()
+        self._fill_models()
+        self._render()
+
     # ---------------------------------------------------------- actions
     def settings(self):
+        before = aiproviders.provider()
         dlg = AssistantSettings(self)
         if dlg.exec():
             dlg.apply()
             self.ck_context.setChecked(QSettings().value("claudeSendFile", True, type=bool))
+            if aiproviders.provider() != before:
+                self.provider_changed()
             self._render()
 
     def _refresh_models(self):
-        if not api_key():
+        if not aiproviders.ready():
             self.settings()
             return
 
@@ -368,9 +527,9 @@ class AssistantPanel(QWidget):
         text = self.input.toPlainText().strip()
         if not text or self.client.busy:
             return
-        if not api_key():
+        if not aiproviders.ready():
             self.settings()
-            if not api_key():
+            if not aiproviders.ready():
                 return
         ctx = self.context_provider() if self.context_provider else {}
         content = text
@@ -386,7 +545,9 @@ class AssistantPanel(QWidget):
         self._streaming = ""
         self.b_send.hide()
         self.b_stop.show()
-        self.client.send(self.history, model=self.cb_model.currentText().strip() or None)
+        self.client.send(self.history, SYSTEM_PROMPT.replace("You are Claude,", f"You are "
+                         f"{aiproviders.short_name()},") if aiproviders.provider() != "Claude" else SYSTEM_PROMPT,
+                         model=self.cb_model.currentText().strip() or None)
         self._render()
 
     @staticmethod
@@ -450,22 +611,26 @@ class AssistantPanel(QWidget):
         fg, muted, accent, err = theme.c("#d4d4d4"), theme.c("#9d9d9d"), theme.c("#4fc1ff"), theme.c("#f48771")
         md = []
         if not self.shown and not self._streaming:
-            md.append("### Claude Assistant\nAsk anything about your code: *why doesn't this work?*, "
+            name = aiproviders.short_name()
+            md.append(f"### AI Assistant ({name})\nAsk anything about your code: *why doesn't this work?*, "
                       "*how do I read a CSV into the grid?*, *what's the Python for VB's Select Case?*\n\n"
-                      "Claude sees the open file (and your selection, errors, and form's controls). "
-                      "Code in answers gets **Insert at cursor** / **Replace selection** / **Copy** links.")
-            if not api_key():
-                md.append("\n\n**First, add your Claude API key:** click ⚙ above. "
-                          "[Get a key at console.anthropic.com](https://console.anthropic.com/settings/keys)")
+                      f"{name} sees the open file (and your selection, errors, and form's controls). "
+                      "Code in answers gets **Insert at cursor** / **Replace selection** / **Copy** links. "
+                      "The ⚙ button switches between Claude, Gemini (free key) and a local model (free, private).")
+            if not aiproviders.ready():
+                md.append("\n\n**First, add your API key:** click ⚙ above. "
+                          + ("[Get a free key at aistudio.google.com](https://aistudio.google.com/apikey)"
+                             if aiproviders.provider() == "Gemini" else
+                             "[Get a key at console.anthropic.com](https://console.anthropic.com/settings/keys)"))
         for role, text in self.shown:
             if role == "user":
                 md.append(f"\n\n---\n\n**You:** {text}")
             elif role == "assistant":
-                md.append("\n\n**Claude:**\n\n" + self._answer_md(text))
+                md.append(f"\n\n**{aiproviders.short_name()}:**\n\n" + self._answer_md(text))
             else:
                 md.append(f"\n\n**⚠ {text}**")
         if self._streaming or self.client.busy:
-            md.append("\n\n**Claude:**\n\n" + (self._streaming or "*thinking...*"))
+            md.append(f"\n\n**{aiproviders.short_name()}:**\n\n" + (self._streaming or "*thinking...*"))
         sb = self.view.verticalScrollBar()
         at_bottom = sb.value() >= sb.maximum() - 30
         self.view.document().setDefaultStyleSheet(
@@ -543,19 +708,19 @@ def apply_code(editor, code, replace):
 class AssistantMixin:
     def _assistant_actions(self):
         from PySide6.QtGui import QKeySequence
-        self.a_assistant = self._act("&Claude Assistant", self.show_assistant)
+        self.a_assistant = self._act("&AI Assistant", self.show_assistant)
         self.a_assistant.setShortcuts([QKeySequence("Ctrl+Alt+A"), QKeySequence("Ctrl+\\, Ctrl+C")])
-        self.a_ask_explain = self._act("Ask Claude: &Explain", lambda: self._ask("explain"))
-        self.a_ask_fix = self._act("Ask Claude: &Fix Errors", lambda: self._ask("fix"))
+        self.a_ask_explain = self._act("Ask AI: &Explain", lambda: self._ask("explain"))
+        self.a_ask_fix = self._act("Ask AI: &Fix Errors", lambda: self._ask("fix"))
         self.a_suggest = self._act("Inline Suggestion (&Claude)", self.inline_suggestion, "Alt+\\")
-        self.a_ask_vb = self._act("Ask Claude: Translate &VB/C#", lambda: self._ask("vb"))
+        self.a_ask_vb = self._act("Ask AI: Translate &VB/C#", lambda: self._ask("vb"))
 
     def _assistant_init(self):
         from PySide6.QtWidgets import QDockWidget
         self.assistant = AssistantPanel(self._assistant_context)
         self.assistant.insert_code.connect(lambda code: self._apply_assistant_code(code, False))
         self.assistant.replace_selection.connect(lambda code: self._apply_assistant_code(code, True))
-        self.assistant_dock = QDockWidget("Claude Assistant", self)
+        self.assistant_dock = QDockWidget("AI Assistant", self)
         self.assistant_dock.setObjectName("ClaudeAssistant")
         self.assistant_dock.setWidget(self.assistant)
         self.addDockWidget(Qt.RightDockWidgetArea, self.assistant_dock)
@@ -565,7 +730,7 @@ class AssistantMixin:
     def attach_ghost(self, ed):
         """Inline suggestions (gray ghost text) for a code editor."""
         from .ghost import GhostCompleter
-        ed.ghost = GhostCompleter(ed, lambda: API_URL, api_key, API_VERSIONS)
+        ed.ghost = GhostCompleter(ed)
 
     def inline_suggestion(self):
         """Alt+\\: ask Claude for a suggestion at the cursor now."""
@@ -573,12 +738,12 @@ class AssistantMixin:
         ed = self.current_editor()
         if not isinstance(ed, CodeEditor) or ed.ghost is None:
             return
-        if not api_key():
+        if not aiproviders.ready():
             self.show_assistant()
             self.assistant.settings()
-            if not api_key():
+            if not aiproviders.ready():
                 return
-        self.statusBar().showMessage("Asking Claude for a suggestion...", 3000)
+        self.statusBar().showMessage(f"Asking {aiproviders.short_name()} for a suggestion...", 3000)
         ed.ghost.request(manual=True)
 
     def show_assistant(self):
