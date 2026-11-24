@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDialog, QDialogButtonBo
 from . import __version__
 
 API = os.environ.get("PYSTUDIO_UPDATE_API", "https://api.github.com")
+DEFAULT_REPO = "rwszarka73-py/pystudio"      # where PyStudio's releases are published
 LAUNCHER = os.path.join(os.path.expanduser("~"), ".local", "bin", "pystudio")
 
 
@@ -268,7 +269,7 @@ class UpdatesDialog(QDialog):
         v.addWidget(QLabel(f"You have <b>PyStudio {__version__}</b>."))
         h = QHBoxLayout()
         h.addWidget(QLabel("Releases on GitHub:"))
-        self.repo = QLineEdit(s.value("updateRepo", ""))
+        self.repo = QLineEdit(s.value("updateRepo", "") or DEFAULT_REPO)
         self.repo.setPlaceholderText("owner/repository, e.g.  rob/pystudio-releases")
         h.addWidget(self.repo, 1)
         self.b_check = QPushButton("Check Now")
@@ -360,7 +361,7 @@ def auto_check(window):
     """Once a day at startup (when a repository is set): a quiet check; a newer release shows in the status bar."""
     import time
     s = QSettings()
-    repo = s.value("updateRepo", "")
+    repo = s.value("updateRepo", "") or DEFAULT_REPO
     if not repo or s.value("updateAutoCheck", "true") != "true":
         return None
     last = float(s.value("updateLastCheck", 0) or 0)
