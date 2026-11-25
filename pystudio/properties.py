@@ -322,18 +322,19 @@ def control_specs(d, w):
         specs.append(Prop("Appearance", "ShowText", "bool", w.isTextVisible, w.setTextVisible,
                           tip="Show the percentage text."))
     if tool == "DateTimePicker":
-        fmts = {"Short": "M/d/yyyy", "Long": "dddd, MMMM d, yyyy"}
+        fmts = {"Short": "M/d/yyyy", "Long": "dddd, MMMM d, yyyy", "Time": "h:mm AP"}
 
         def set_fmt(v):
             ps["format"] = v
             if v in fmts:
                 w.setDisplayFormat(fmts[v])
+                w.setCalendarPopup(v != "Time")      # a time is picked with the arrows (VB: ShowUpDown)
         specs += [
             Prop("Appearance", "Format", "enum", lambda: ps.get("format", "Short"), set_fmt,
-                 ["Short", "Long", "Custom"], rebuild=True),
+                 ["Short", "Long", "Time", "Custom"], rebuild=True),
             Prop("Appearance", "CustomFormat", "str", w.displayFormat,
                  lambda v: (w.setDisplayFormat(v), ps.__setitem__("format", "Custom")),
-                 tip="Qt date format, e.g. yyyy-MM-dd or MMM d, yyyy"),
+                 tip="Qt date/time format, e.g. yyyy-MM-dd, MMM d, yyyy or h:mm AP"),
         ]
     if tool == "PictureBox":
         specs += [

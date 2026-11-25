@@ -369,7 +369,7 @@ def _bs_col(columns, name):
 
 
 def _bs_show(w, v):
-    from PySide6.QtWidgets import (QCheckBox, QComboBox, QDateEdit, QDoubleSpinBox, QLineEdit, QPlainTextEdit,
+    from PySide6.QtWidgets import (QCheckBox, QComboBox, QDateEdit, QDateTimeEdit, QDoubleSpinBox, QLineEdit, QPlainTextEdit,
                                    QSpinBox, QTextEdit)
     if isinstance(w, QCheckBox):
         w.setChecked(bool(v))
@@ -377,7 +377,7 @@ def _bs_show(w, v):
         w.setValue(int(v or 0))
     elif isinstance(w, QDoubleSpinBox):
         w.setValue(float(v or 0))
-    elif isinstance(w, QDateEdit):
+    elif isinstance(w, QDateTimeEdit):
         d = QDate.fromString(str(v)[:10], "yyyy-MM-dd") if v else QDate()
         if d.isValid():
             w.setDate(d)

@@ -65,7 +65,7 @@ EVENT_MAP = {
     ("ListBox", "SelectedIndexChanged"): "currentRowChanged", ("ListBox", "DoubleClick"): "itemDoubleClicked",
     ("ListBox", "Click"): "itemClicked",
     ("NumericUpDown", "ValueChanged"): "valueChanged", ("TrackBar", "ValueChanged"): "valueChanged",
-    ("TrackBar", "Scroll"): "valueChanged", ("DateTimePicker", "ValueChanged"): "dateChanged",
+    ("TrackBar", "Scroll"): "valueChanged", ("DateTimePicker", "ValueChanged"): "dateTimeChanged",
     ("DataGridView", "CellClick"): "cellClicked", ("DataGridView", "CellContentClick"): "cellClicked",
     ("DataGridView", "CellDoubleClick"): "cellDoubleClicked", ("DataGridView", "CellValueChanged"): "cellChanged",
     ("DataGridView", "SelectionChanged"): "itemSelectionChanged",
@@ -474,7 +474,11 @@ class FormBuilder:
                 self.top_offset += (_ints(size) + [0, 24 if t == "MenuStrip" else 25])[1] if size else \
                     (24 if t == "MenuStrip" else 25)
         # controls, parents first
-        roots = [n for n in vb.order if n in vb.types] + [n for n in vb.types if n not in vb.parent and n not in vb.order]
+        # WinForms docks the control added LAST first, and draws the first-added one on top. PyStudio docks and
+        # draws in creation order, so create in reverse Controls.Add order (stacked Dock=Top labels then come out
+        # in the same order as in Visual Studio).
+        roots = [n for n in reversed(vb.order) if n in vb.types] + \
+            [n for n in vb.types if n not in vb.parent and n not in vb.order]
         for n in roots:
             self._create(n, d.surface)
         self._components()
@@ -580,17 +584,17 @@ class FormBuilder:
         self._props(w, tool, t, p, name)
         if tool in ("CheckBox", "RadioButton", "Label", "LinkLabel") and w.sizeHint().width() > w.width():
             w.resize(w.sizeHint().width(), w.height())     # Linux fonts run wider than Windows' 8.25pt
-        # children (in Controls.Add order; WinForms adds them front-to-back)
-        kids = [c for c, (par, _i) in vb.parent.items() if par == name]
+        # children: reverse Controls.Add order (see roots in build) - WinForms docks the last-added first
+        kids = [c for c, (par, _i) in vb.parent.items() if par == name][::-1]
         if tool == "TabControl":
-            pages = [c for c in kids if vb.types.get(c) == "TabPage"]
+            pages = [c for c in kids[::-1] if vb.types.get(c) == "TabPage"]     # tabs keep Controls.Add order
             if pages:
                 self.setp(w, self.specs(w), "TabPages", [_string(vb.props.get(pg, {}).get("Text", '""')) or pg
                                                           for pg in pages])
                 for i, (pg, panel) in enumerate(zip(pages, M.panels_of(w))):
                     panel.setObjectName(pg)
                     panel.resize(max(1, w.width() - 4), max(1, w.height() - 26))
-                    for c in [c for c, (par, _i) in vb.parent.items() if par == pg]:
+                    for c in [c for c, (par, _i) in vb.parent.items() if par == pg][::-1]:
                         self._create(c, panel)
             return
         if tool == "SplitContainer":
@@ -607,6 +611,11 @@ class FormBuilder:
 
     def _props(self, w, tool, vbtype, p, name):
         specs = self.specs(w)
+        if "Padding" in p and tool in M.CONTAINERS and hasattr(w, "_ps"):
+            v = _ints(p["Padding"])
+            v = v * 4 if len(v) == 1 else v
+            if len(v) == 4 and any(v):
+                w._ps["padding"] = ",".join(str(x) for x in v)
         s = lambda prop, val: self.setp(w, specs, prop, val)  # noqa: E731
         if "Text" in p and "Text" in specs:
             s("Text", _string(p["Text"]) or "")
@@ -645,6 +654,8 @@ class FormBuilder:
             s("DropDownStyle", _enum(p["DropDownStyle"]))
         if ("PasswordChar" in p or "UseSystemPasswordChar" in p) and "UseSystemPasswordChar" in specs:
             s("UseSystemPasswordChar", True if "PasswordChar" in p else _bool(p["UseSystemPasswordChar"]))
+        if tool == "Label" and "TextAlign" not in p and "TextAlign" in specs:
+            s("TextAlign", "TopLeft")          # VB's Label default (PyStudio's own labels default to MiddleLeft)
         if "TextAlign" in p and "TextAlign" in specs:
             v = _enum(p["TextAlign"])
             opts = specs["TextAlign"].opts or []
@@ -668,8 +679,10 @@ class FormBuilder:
             if "Format" in p:
                 fmt = _enum(p["Format"])
                 s("Format", fmt if fmt in ("Short", "Long", "Time", "Custom") else "Short")
-            if "CustomFormat" in p:
+            if "CustomFormat" in p and _enum(p.get("Format", "")) == "Custom":
                 s("CustomFormat", _qt_date_format(_string(p["CustomFormat"])))
+            if "ShowUpDown" in p and _bool(p["ShowUpDown"]):
+                w.setCalendarPopup(False)
         if vbtype == "LinkLabel" and "Text" in p:
             s("Text", _string(p["Text"]))
         if vbtype in ("HScrollBar", "VScrollBar") or ("Orientation" in p and tool in ("TrackBar", "SplitContainer")):

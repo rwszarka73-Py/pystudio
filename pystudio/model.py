@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtGui import QFont, QPixmap
-from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QFrame,
+from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDateEdit, QDateTimeEdit, QFrame,
                                QGroupBox, QLabel, QLineEdit, QListWidget, QPlainTextEdit,
                                QProgressBar, QPushButton, QRadioButton, QSlider, QSpinBox,
                                QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
@@ -33,7 +33,7 @@ TOOLS = {
     "ComboBox":       ("QComboBox",      "comboBox",       (140, 26)),
     "ListBox":        ("QListWidget",    "listBox",        (140, 110)),
     "NumericUpDown":  ("QSpinBox",       "numericUpDown",  (90, 26)),
-    "DateTimePicker": ("QDateEdit",      "dateTimePicker", (140, 26)),
+    "DateTimePicker": ("QDateTimeEdit",  "dateTimePicker", (140, 26)),
     "TrackBar":       ("QSlider",        "trackBar",       (150, 26)),
     "ProgressBar":    ("QProgressBar",   "progressBar",    (150, 24)),
     "PictureBox":     ("QLabel",         "pictureBox",     (120, 100)),
@@ -111,6 +111,7 @@ TOOL_GROUPS = [
     ("Printing", ["PageSetupDialog", "PrintDialog", "PrintDocument", "PrintPreviewDialog"]),
 ]
 CLASS_TO_TOOL = {cls: tool for tool, (cls, _p, _s) in TOOLS.items() if tool not in PSTYPE_TOOLS}
+CLASS_TO_TOOL["QDateEdit"] = "DateTimePicker"     # forms saved before v2.11 (date-only box)
 _BUILTIN_TOOLS = set(TOOLS)
 
 # Events per control (Events tab): (signal, handler argument list)
@@ -126,7 +127,7 @@ EVENTS = {
     "ListBox": [("currentRowChanged", "row"), ("currentTextChanged", "text"),
                 ("itemClicked", "item"), ("itemDoubleClicked", "item")],
     "NumericUpDown": [("valueChanged", "value"), ("editingFinished", "")],
-    "DateTimePicker": [("dateChanged", "date"), ("editingFinished", "")],
+    "DateTimePicker": [("dateTimeChanged", "value"), ("dateChanged", "date"), ("editingFinished", "")],
     "TrackBar": [("valueChanged", "value"), ("sliderMoved", "position"), ("sliderReleased", "")],
     "ProgressBar": [("valueChanged", "value")],
     "Label": [("linkActivated", "link")],
@@ -252,7 +253,7 @@ BORDER_STYLES = ["None", "FixedSingle", "Fixed3D"]
 ANCHOR_DEFAULT = "Top, Left"
 
 SURFACE_CSS = """
-QLineEdit, QPlainTextEdit, QListWidget, QTableWidget, QDateEdit, QSpinBox, QTreeView, QTreeWidget
+QLineEdit, QPlainTextEdit, QListWidget, QTableWidget, QDateEdit, QDateTimeEdit, QSpinBox, QTreeView, QTreeWidget
     { background: #ffffff; color: #000000; }
 QLabel, QCheckBox, QRadioButton, QGroupBox { color: #000000; }
 QTreeView::item:selected, QListWidget::item:selected { background: #cce4f7; color: #000000; }
@@ -325,7 +326,7 @@ def font_text(d):
 # ============================================================ widget creation
 def new_ps(tool):
     return {"tool": tool, "raw": None, "back": None, "fore": None, "css": "",
-            "anchor": ANCHOR_DEFAULT, "tag": "", "locked": False,
+            "anchor": ANCHOR_DEFAULT, "tag": "", "locked": False, "padding": "",
             "autosize": False, "cursor": "Default", "image": "", "sizemode": "Normal",
             "border": "None", "font": None, "visible": True, "tabstop": True,
             "flat": False, "columns": [], "format": "Short", "dock": "None",
@@ -366,7 +367,7 @@ def make_widget(tool, parent, empty=False):
             w.setColumnCount(1)
             w.setHeaderLabels(["Column1"])
     elif tool == "DateTimePicker":
-        w = QDateEdit(parent)
+        w = QDateTimeEdit(parent)          # date and/or time, by its format (VB's DateTimePicker)
         w.setCalendarPopup(True)
         w.setDate(QDate.currentDate())
     elif tool == "Chart":
@@ -466,7 +467,15 @@ def panels_of(w):
 
 
 def interior_rect(w):
-    """Area of a container that docked children fill (in the container's coordinates)."""
+    """Area of a container that docked children fill (in the container's coordinates), less its Padding."""
+    try:
+        l, t_, r, b = [int(x) for x in str(getattr(w, "_ps", {}).get("padding") or "0,0,0,0").split(",")]
+    except ValueError:
+        l = t_ = r = b = 0
+    return _interior_raw(w).adjusted(l, t_, -r, -b)
+
+
+def _interior_raw(w):
     from PySide6.QtCore import QRect
     t = tool_of(w) if hasattr(w, "_ps") else None
     if t == "GroupBox":
@@ -892,7 +901,7 @@ def control_to_xml(w):
         if w.suffix():
             _prop(el, "suffix", "string", w.suffix())
     elif tool == "DateTimePicker":
-        _prop(el, "calendarPopup", "bool", True)
+        _prop(el, "calendarPopup", "bool", w.calendarPopup())
         _prop(el, "displayFormat", "string", w.displayFormat())
     elif tool == "TrackBar":
         orient = "Horizontal" if w.orientation() == Qt.Horizontal else "Vertical"
@@ -990,6 +999,8 @@ def control_to_xml(w):
         _prop(el, "anchor", "string", ps["anchor"], stdset=False)
     if ps.get("tag"):
         _prop(el, "tag", "string", ps["tag"], stdset=False)
+    if ps.get("padding"):
+        _prop(el, "padding", "string", ps["padding"], stdset=False)
     if ps.get("locked"):
         _prop(el, "locked", "bool", True, stdset=False)
     if tool in BINDABLE and ps.get("datasource"):
@@ -1145,6 +1156,7 @@ def control_from_xml(el, parent, project_dir=None):
     ps["fore"] = m.group(1).strip() if m else None
     ps["anchor"] = p.get("anchor", ANCHOR_DEFAULT)
     ps["tag"] = p.get("tag", "")
+    ps["padding"] = p.get("padding", "")
     ps["locked"] = p.get("locked", False)
     ps["autosize"] = p.get("autoSize", False)
     ps["datasource"] = p.get("dataSource", "")
@@ -1218,6 +1230,7 @@ def control_from_xml(el, parent, project_dir=None):
         w.setSuffix(p.get("suffix", ""))
     elif tool == "DateTimePicker":
         w.setDisplayFormat(p.get("displayFormat", "M/d/yyyy"))
+        w.setCalendarPopup(p.get("calendarPopup", True))
         ps["format"] = p.get("dateFormat", "Short")
     elif tool == "TrackBar":
         if "Vertical" in (p.get("orientation") or ""):
