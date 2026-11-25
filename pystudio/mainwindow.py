@@ -1560,15 +1560,21 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
             ed.deleteLater()
 
     # =============================================================== project
-    def import_vb_project(self):
-        """File > Import VB.NET Project: a Visual Studio WinForms .vbproj becomes a PyStudio project."""
+    def import_vb_project(self, vbproj=None):
+        """File > Import VB.NET Project: a Visual Studio WinForms .vbproj / .csproj (or the .sln holding one)
+        becomes a PyStudio project."""
         from .templates import default_repos_dir
         from . import vbimport
-        vbproj, _f = QFileDialog.getOpenFileName(self, "Import VB.NET or C# Project", os.path.expanduser("~"),
-                                                 "Visual Studio WinForms projects (*.vbproj *.csproj);;"
-                                                 "All files (*)")
+        if not vbproj:
+            vbproj, _f = QFileDialog.getOpenFileName(
+                self, "Import VB.NET or C# Project", os.path.expanduser("~"),
+                "Visual Studio solutions and WinForms projects (*.sln *.vbproj *.csproj);;All files (*)")
         if not vbproj:
             return
+        if vbproj.lower().endswith(".sln"):
+            vbproj = self._project_in_sln(vbproj)
+            if not vbproj:
+                return
         if vbproj.lower().endswith(".csproj"):
             from . import csimport
             info = csimport.parse_csproj(vbproj)
@@ -1852,10 +1858,39 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         from .winpublish import WindowsPublishDialog
         WindowsPublishDialog(Project(root), parent=self).exec()
 
+    def _project_in_sln(self, sln_path):
+        """The .vbproj / .csproj a Visual Studio .sln points to (asks when there are several), or None."""
+        try:
+            text = open(sln_path, encoding="utf-8-sig", errors="replace").read()
+        except OSError as e:
+            QMessageBox.warning(self, "Import", f"Couldn't read {sln_path}:\n{e}")
+            return None
+        base = os.path.dirname(os.path.abspath(sln_path))
+        listed = [p.replace("\\", "/") for p in re.findall(r'^Project\([^)]*\)\s*=\s*"[^"]*",\s*"([^"]+\.(?:vb|cs)proj)"',
+                                                           text, re.M | re.I)]
+        found = [os.path.normpath(os.path.join(base, p)) for p in listed]
+        have = [p for p in found if os.path.exists(p)]
+        if not have:
+            names = "\n".join("  " + p for p in listed) or "  (no VB.NET or C# projects listed)"
+            QMessageBox.warning(self, "Import", "The solution lists:\n" + names + "\n\nbut " + (
+                "that file isn't" if len(listed) == 1 else "those files aren't") + " next to it. A .sln is only an "
+                "index: copy the whole solution folder (the .sln plus the project folder with the .vbproj and the "
+                ".vb files) to this computer, then open the .sln from there.")
+            return None
+        if len(have) == 1:
+            return have[0]
+        labels = [os.path.relpath(p, base) for p in have]
+        choice, ok = QInputDialog.getItem(self, "Import", "This solution has several projects. Import which one?",
+                                          labels, 0, False)
+        return have[labels.index(choice)] if ok else None
+
     def open_project_dialog(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Open Project/Solution",
-                                              self.settings.value("projectsDir", os.path.expanduser("~/repos")),
-                                              "PyStudio projects and solutions (*.pyproj *.pysln);;All files (*)")
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Project/Solution", self.settings.value("projectsDir", os.path.expanduser("~/repos")),
+            "PyStudio projects and solutions (*.pyproj *.pysln);;"
+            "Visual Studio solutions and projects - imported (*.sln *.vbproj *.csproj);;All files (*)")
+        if path and path.lower().endswith((".sln", ".vbproj", ".csproj")):
+            return self.import_vb_project(path)
         if path:
             folder = os.path.dirname(os.path.abspath(path))
             if path.endswith(".pyproj") and not sln.find_solution_file(folder):
