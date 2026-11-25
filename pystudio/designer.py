@@ -71,7 +71,7 @@ def default_form():
             "icon": "", "minsize": (0, 0), "maxsize": (0, 0), "opacity": 100,
             "startpos": "WindowsDefaultLocation", "border": "Sizable", "maxbox": True,
             "minbox": True, "topmost": False, "state": "Normal", "accept": "", "cancel": "", "kind": "",
-            "contextmenu": ""}
+            "contextmenu": "", "autoscale": ""}
 
 
 def form_css(form):
@@ -877,6 +877,7 @@ class FormDesigner(ToolStripMixin, MenuDesignerMixin, QWidget):
         f = default_form()
         f["title"] = p.get("windowTitle", self.form_class)
         f["font"] = p.get("font")
+        f["autoscale"] = p.get("autoScaleDimensions", "")
         css = p.get("styleSheet", "")
         f["css"] = M.split_css(css)
         gen = css.split("/* PyStudio */")[-1] if "/* PyStudio */" in css else ""
@@ -940,6 +941,8 @@ class FormDesigner(ToolStripMixin, MenuDesignerMixin, QWidget):
             M._prop(top, "maximumSize", "size", f["maxsize"])
         if f.get("font"):
             M._prop(top, "font", "font", f["font"])
+        if f.get("autoscale"):     # WinForms AutoScaleMode.Font: the character size the layout was made for
+            M._prop(top, "autoScaleDimensions", "string", f["autoscale"], stdset=False)
         M._prop(top, "windowTitle", "string", f["title"])
         if f.get("icon"):
             M._prop(top, "windowIcon", "iconset", f["icon"])
@@ -1533,12 +1536,19 @@ class FormDesigner(ToolStripMixin, MenuDesignerMixin, QWidget):
         if getattr(self, "controls", None):
             self.apply_docks_all()
 
+    def _depth(self, w):
+        n, p = 0, w.parentWidget()
+        while p is not None and p is not self.surface:
+            n, p = n + 1, p.parentWidget()
+        return n
+
     def apply_form_visuals(self):
         f = self.form
         self.title_bar.setText(f["title"])
         self.surface.setStyleSheet(M.SURFACE_CSS + "\n" + form_css(f))
+        self.surface._form_surface = True
         self.surface.setFont(M.font_from_dict(f.get("font")))
-        for c in self.controls:
+        for c in sorted(self.controls, key=self._depth):     # containers first: children inherit their font
             M.apply_visuals(c, self.project_dir)
         self.surface.update()
 

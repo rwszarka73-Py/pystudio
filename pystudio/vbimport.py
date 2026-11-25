@@ -163,7 +163,7 @@ def _color(raw):
     return c.name() if c.isValid() else None
 
 
-def _font(raw):
+def _font(raw, keep_size=False):
     m = re.search(r'Font\("([^"]+)",\s*([\d.]+)!?(.*)', raw)
     if not m:
         return None
@@ -172,7 +172,7 @@ def _font(raw):
     if family.lower() not in WINDOWS_FONTS:
         d["family"] = family
     # Windows' 8.25pt default looks right as the ambient font; keep explicit other sizes
-    if abs(size - 8.25) > 0.1 and abs(size - 9.0) > 0.1:
+    if keep_size or (abs(size - 8.25) > 0.1 and abs(size - 9.0) > 0.1):
         d["size"] = max(6, round(size))
     for style, key in (("Bold", "bold"), ("Italic", "italic"), ("Underline", "underline"), ("Strikeout", "strikeout")):
         if f"FontStyle.{style}" in rest:
@@ -654,6 +654,8 @@ class FormBuilder:
             s("DropDownStyle", _enum(p["DropDownStyle"]))
         if ("PasswordChar" in p or "UseSystemPasswordChar" in p) and "UseSystemPasswordChar" in specs:
             s("UseSystemPasswordChar", True if "PasswordChar" in p else _bool(p["UseSystemPasswordChar"]))
+        if tool == "Label" and not _bool(p.get("AutoSize", "False")):
+            w.setWordWrap(True)                # a fixed-size WinForms Label wraps its text
         if tool == "Label" and "TextAlign" not in p and "TextAlign" in specs:
             s("TextAlign", "TopLeft")          # VB's Label default (PyStudio's own labels default to MiddleLeft)
         if "TextAlign" in p and "TextAlign" in specs:
@@ -806,7 +808,13 @@ class FormBuilder:
             if vbp in fp:
                 f[key] = _color(fp[vbp])
         if "Font" in fp:
-            f["font"] = _font(fp["Font"])
+            # the form's own font keeps its size: the layout was measured for it (a Windows font
+            # family is left to the desktop's font, which has nearly the same size at the same points)
+            f["font"] = _font(fp["Font"], keep_size=True)
+        if "AutoScaleDimensions" in fp and _enum(fp.get("AutoScaleMode", "Font")) == "Font":
+            m = re.search(r"SizeF\(\s*([\d.]+)!?\s*,\s*([\d.]+)", fp["AutoScaleDimensions"])
+            if m:
+                f["autoscale"] = f"{float(m.group(1)):g},{float(m.group(2)):g}"
         for vbp, key in (("AcceptButton", "accept"), ("CancelButton", "cancel")):
             if vbp in fp:
                 f[key] = fp[vbp].replace("Me.", "").strip()

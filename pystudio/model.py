@@ -655,12 +655,23 @@ def control_css(w, name=None):
     return user
 
 
+def ambient_font(w):
+    """The font a control inherits: its container's, up to the form's. Qt doesn't pass a form's font
+    down by itself once a style sheet is in use (PyStudio has one), so the designer does it."""
+    p = w.parentWidget()
+    while p is not None:
+        if hasattr(p, "_ps") or getattr(p, "_form_surface", False):
+            return p.font()
+        p = p.parentWidget()
+    return QFont()
+
+
 def apply_visuals(w, project_dir=None):
     """Re-apply everything that affects how a control looks in the designer."""
     ps = w._ps
     if ps.get("raw") is not None:
         return
-    w.setFont(font_from_dict(ps.get("font")))
+    w.setFont(font_from_dict(ps.get("font")).resolve(ambient_font(w)))
     css = control_css(w)
     tool = ps["tool"]
     if tool == "Panel" and ps.get("border") == "None":
@@ -704,7 +715,7 @@ def apply_visuals(w, project_dir=None):
 
 
 def apply_autosize(w):
-    if w._ps.get("autosize") and tool_of(w) in ("Label", "LinkLabel"):
+    if w._ps.get("autosize") and tool_of(w) in ("Label", "LinkLabel", "CheckBox", "RadioButton"):
         w.adjustSize()
 
 
