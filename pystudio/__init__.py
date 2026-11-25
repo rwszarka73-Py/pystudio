@@ -1,2 +1,2 @@
 """PyStudio package."""
-__version__ = "2.10.11"
+__version__ = "2.10.12"

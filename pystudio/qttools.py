@@ -181,13 +181,32 @@ def compile_external(ui_path, root, pythons):
             cmds = [[tool]] if tool else []
             if kit == "PySide6":
                 cmds += [[py, "-m", "PySide6.scripts.pyside_tool", "uic"] for py in pythons if py]
+        src = ui_path
+        if kit in ("PyQt5", "PySide2"):
+            src = _qt5_ui(ui_path)               # Qt 5's generators don't know Qt 6's enum spelling
+        tmp_out = out + ".pystudio-new"
         for base in cmds:
-            args = base + ([] if kit.startswith("PySide") or not runnable else ["-x"]) + [ui_path, "-o", out]
+            # run in the form's folder with plain file names: image paths in the code stay relative
+            # ("icon.png", like a pyuic5 run by hand) instead of this computer's full paths
+            args = base + ([] if kit.startswith("PySide") or not runnable else ["-x"]) + \
+                [os.path.basename(src), "-o", os.path.abspath(tmp_out)]
             try:
-                r = subprocess.run(args, capture_output=True, text=True, timeout=60)
+                r = subprocess.run(args, capture_output=True, text=True, timeout=60, cwd=os.path.dirname(src))
             except (OSError, subprocess.TimeoutExpired):
                 continue
             if r.returncode == 0:
+                try:                             # never replace a working file with broken Python
+                    with open(tmp_out, encoding="utf-8") as f:
+                        code = f.read()
+                    code = code.replace(os.path.basename(src), os.path.basename(ui_path), 1)  # the header
+                    compile(code, out, "exec")
+                except (OSError, SyntaxError) as e:
+                    results.append((False, f"{os.path.basename(out)} wasn't updated: the generated code "
+                                           f"doesn't compile ({e}). The old file was kept."))
+                    break
+                with open(out, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(code)
+                os.remove(tmp_out)
                 results.append((True, f"Updated {os.path.basename(out)} from {os.path.basename(ui_path)}"))
                 break
             if "No module named" not in (r.stderr or ""):
@@ -197,5 +216,25 @@ def compile_external(ui_path, root, pythons):
         else:
             results.append((False, f"{os.path.basename(out)} wasn't updated: no Python here has {kit}'s form "
                                    f"generator. Pick the project's Python in Project Properties > Debug."))
+        for leftover in (tmp_out, src if src != ui_path else None):
+            if leftover and os.path.exists(leftover):
+                os.remove(leftover)
     return results
+
+
+def _qt5_ui(ui_path):
+    """A copy of the form for Qt 5's generators: Qt::AlignmentFlag::AlignHCenter -> Qt::AlignHCenter,
+    QFrame::Shape::StyledPanel -> QFrame::StyledPanel (Qt 5's uic only knows the short form)."""
+    with open(ui_path, encoding="utf-8") as f:
+        text = f.read()
+
+    def fix(m):
+        return re.sub(r"\b(\w+)::\w+::(\w+)\b", r"\1::\2", m.group(0))
+    text = re.sub(r"<(enum|set)>[^<]*</\1>", fix, text)
+    # next to the form, so relative paths (icon.png) stay relative to the same folder
+    folder, name = os.path.split(ui_path)
+    path = os.path.join(folder, "." + name + ".pystudio-qt5.ui")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return path
 
