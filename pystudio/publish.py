@@ -168,11 +168,42 @@ class Publisher(QObject):
     def _have_pyinstaller(self, code):
         if code == 0:
             return self._build()
+        from . import interp
+        if interp.externally_managed(self.python):
+            return self._use_build_env()
         self.log.emit("PyInstaller isn't installed for this Python - installing it (one time)...\n")
         self._run(["-m", "pip", "install", "--disable-pip-version-check", "pyinstaller"],
                   lambda c: self._build() if c == 0 else
                   self._fail("Couldn't install PyInstaller (internet needed). "
                              "Try: Project Properties > Packages > install 'pyinstaller'."))
+
+    def _use_build_env(self):
+        """Ubuntu's own Python won't take pip installs (PEP 668). Build with a venv made from it instead: it sees
+        Ubuntu's packages (--system-site-packages, so apt imports like PyQt5 or gi still get bundled) and
+        PyInstaller goes into it. Made once, outside the project, and reused."""
+        from . import interp
+        env = interp.build_env_dir(self.python)
+        env_py = os.path.join(env, "bin", "python")
+        base = self.python
+        self.log.emit(f"{base} is Ubuntu's own Python, which doesn't allow pip installs - publishing with a build "
+                      f"environment made from it instead (it can see Ubuntu's packages):\n  {env}\n")
+
+        def have_env(code):
+            if code != 0 or not os.path.exists(env_py):
+                return self._fail("Couldn't create the build environment. Install venv support, then Publish "
+                                  "again:  sudo apt install python3-venv")
+            self.python = env_py
+            self._run(["-c", "import PyInstaller"], lambda c: self._build() if c == 0 else self._install_pyinstaller())
+        if os.path.exists(env_py):
+            return have_env(0)
+        os.makedirs(os.path.dirname(env), exist_ok=True)
+        self._run(["-m", "venv", "--system-site-packages", env], have_env)
+
+    def _install_pyinstaller(self):
+        self.log.emit("Installing PyInstaller into the build environment (one time)...\n")
+        self._run(["-m", "pip", "install", "--disable-pip-version-check", "pyinstaller"],
+                  lambda c: self._build() if c == 0 else
+                  self._fail("Couldn't install PyInstaller (internet needed). See the log above."))
 
     def _build(self):
         root = self.p.root

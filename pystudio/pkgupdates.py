@@ -167,6 +167,9 @@ class StatusBadge(QObject):
     def project_changed(self, python):
         """A project became active (python = its interpreter) or closed (None)."""
         self.check.cancel()
+        from . import interp
+        if python and interp.externally_managed(python):
+            python = None              # Ubuntu's own Python: Ubuntu's updates handle its packages, not pip
         self.python = python
         rows, _t = cached(python)
         self.show_rows(rows or [])

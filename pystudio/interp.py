@@ -129,3 +129,30 @@ def python_with(module, root, current, pystudio_python=sys.executable):
         if os.path.abspath(p) != os.path.abspath(current) and missing(p, [module]) == []:
             return p
     return None
+
+
+_MANAGED = {}
+
+
+def externally_managed(python):
+    """True for a distribution's own Python (Ubuntu 23.04+): pip refuses to install into it (PEP 668). A venv made
+    from it is not managed."""
+    if not python:
+        return False
+    if python not in _MANAGED:
+        code = ("import sys, sysconfig, os; print(sys.prefix == sys.base_prefix and os.path.exists("
+                "os.path.join(sysconfig.get_path('stdlib'), 'EXTERNALLY-MANAGED')))")
+        try:
+            r = subprocess.run([python, "-c", code], capture_output=True, text=True, timeout=15)
+            _MANAGED[python] = r.stdout.strip() == "True"
+        except (OSError, subprocess.SubprocessError):
+            _MANAGED[python] = False
+    return _MANAGED[python]
+
+
+def build_env_dir(python):
+    """Where Publish keeps a venv for a managed Python: outside the project, one per Python."""
+    import hashlib
+    h = hashlib.sha1(os.path.realpath(python).encode()).hexdigest()[:10]
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    return os.path.join(base, "pystudio", "buildenvs", f"{os.path.basename(python)}-{h}")

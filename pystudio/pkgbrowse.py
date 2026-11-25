@@ -279,6 +279,18 @@ class UpdatesTab(QWidget):
         if not py:
             self.status.setText("")
             return
+        from . import interp
+        if interp.externally_managed(py):
+            self.list.clear()
+            self.status.setText("This project uses Ubuntu's own Python: Ubuntu's Software Updater keeps its packages "
+                                "up to date, and pip can't change them. To manage packages with pip, use a project "
+                                "virtual environment (Project Properties > Debug > Create .venv).")
+            self.b_check.setEnabled(False)
+            self.b_sel.setEnabled(False)
+            self.b_all.setEnabled(False)
+            return
+        for b in (self.b_check, self.b_sel, self.b_all):
+            b.setEnabled(True)
         rows, t = pkgupdates.cached(py)
         if rows is not None:
             self.rows = rows
