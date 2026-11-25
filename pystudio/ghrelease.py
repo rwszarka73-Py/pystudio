@@ -114,9 +114,17 @@ class ReleaseDialog(QDialog):
         self.l_none.setWordWrap(True)
         h.addWidget(self.l_none, 1)
         v.addLayout(h)
-        if not self.files.count():
+        names = [os.path.basename(self.files.item(i).data(Qt.UserRole)).lower() for i in range(self.files.count())]
+        if not names:
             self.l_none.setText("Nothing published yet - use Build > Publish (Linux) or Publish for Windows first, "
                                 "or add a file.")
+        else:
+            missing = []
+            if not any(n.endswith((".deb", ".tar.gz", ".appimage")) for n in names):
+                missing.append("no Linux build (.deb / .tar.gz) - Build > Publish makes it")
+            if not any(n.endswith((".exe", ".msi")) or "windows" in n for n in names):
+                missing.append("no Windows build - Build > Publish for Windows makes it")
+            self.l_none.setText(("Not found: " + "; ".join(missing) + ".") if missing else "")
         self.l_state = QLabel()
         self.l_state.setWordWrap(True)
         self.l_state.setStyleSheet("color: #9d9d9d;")

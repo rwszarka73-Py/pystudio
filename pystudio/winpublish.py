@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import zipfile
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Qt, Signal
@@ -338,11 +339,14 @@ def build_installer(project, payload, out_dir, log=lambda t: None):
 
 # ============================================================ 1. Wine
 class WineBuilder(QObject):
+    _packaged = Signal(bool, str, str)   # from the packaging thread: ok, result or error, log text
     log = Signal(str)
     finished = Signal(bool, str)
 
     def __init__(self, project, pystudio_python=sys.executable, single_file=False, installer=False, parent=None):
         super().__init__(parent)
+        self._canceled = False
+        self._packaged.connect(self._package_done)
         self.p = project
         self.python = pystudio_python
         self.single_file = single_file
@@ -384,6 +388,7 @@ class WineBuilder(QObject):
         self.finished.emit(False, msg)
 
     def cancel(self):
+        self._canceled = True
         if self.proc is not None and self.proc.state() != QProcess.NotRunning:
             try:
                 self.proc.finished.disconnect()
@@ -528,18 +533,44 @@ class WineBuilder(QObject):
     def _built(self, code):
         if code != 0:
             return self._fail(f"PyInstaller failed (exit code {code}). See the log above.")
+        # zipping and makensis take a minute or more: off the main thread, so PyStudio keeps responding
+        self.log.emit("Packaging" + (" and building Setup.exe" if self.installer else "") + " - this takes a "
+                      "minute or two; PyStudio stays usable meanwhile...\n")
+        self._canceled = False
+
+        def work():
+            try:
+                res = self._package()
+            except Exception as e:  # noqa: BLE001 - any packaging problem goes to the log
+                res = (False, f"Packaging failed: {e}", "")
+            try:
+                self._packaged.emit(*res)
+            except RuntimeError:          # PyStudio closed meanwhile
+                pass
+        threading.Thread(target=work, name="winpublish-package", daemon=True).start()
+
+    def _package_done(self, ok, msg, text):
+        if getattr(self, "_canceled", False):
+            return
+        if not ok:
+            return self._fail(msg)
+        self.log.emit(text)
+        self.finished.emit(True, msg)
+
+    def _package(self):
+        """(ok, result path or error, log text) - runs in a thread: no signals from here except log."""
         dist = os.path.join(self.out, "dist")
         try:
             if self.single_file:
                 exe = os.path.join(dist, self.app + ".exe")
                 if not os.path.exists(exe):
-                    return self._fail(f"{self.app}.exe wasn't made - see the log above.")
+                    return False, f"{self.app}.exe wasn't made - see the log above.", ""
                 result = os.path.join(self.out, f"{self.app}-{self.version}.exe")
                 shutil.copy2(exe, result)
             else:
                 folder = os.path.join(dist, self.app)
                 if not os.path.exists(os.path.join(folder, self.app + ".exe")):
-                    return self._fail(f"{self.app}.exe wasn't made - see the log above.")
+                    return False, f"{self.app}.exe wasn't made - see the log above.", ""
                 result = os.path.join(self.out, f"{self.app}-{self.version}-windows.zip")
                 with zipfile.ZipFile(result, "w", zipfile.ZIP_DEFLATED) as z:
                     for dirpath, _dirs, files in os.walk(folder):
@@ -547,24 +578,22 @@ class WineBuilder(QObject):
                             full = os.path.join(dirpath, f)
                             z.write(full, os.path.join(self.app, os.path.relpath(full, folder)))
         except OSError as e:
-            return self._fail(f"Packaging failed: {e}")
+            return False, f"Packaging failed: {e}", ""
         if self.installer:
             payload = os.path.join(dist, self.app + ".exe") if self.single_file else os.path.join(dist, self.app)
             try:
                 setup = build_installer(self.p, payload, self.out, self.log.emit)
             except (RuntimeError, OSError, subprocess.SubprocessError) as e:
-                return self._fail(f"The program was built ({result}), but the installer wasn't: {e}")
+                return False, f"The program was built ({result}), but the installer wasn't: {e}", ""
             size = os.path.getsize(setup) / 1_048_576
-            self.log.emit(f"\nInstaller: {setup}  ({size:.0f} MB)\nRun it on Windows: it installs for the current "
-                          "user (no admin password), adds a Start menu entry, a desktop icon (optional) and an "
-                          "entry in Settings > Apps to uninstall it.\nAlso made: " + result + "\n")
-            self.finished.emit(True, setup)
-            return
+            return True, setup, (f"\nInstaller: {setup}  ({size:.0f} MB)\nRun it on Windows: it installs for the "
+                                 "current user (no admin password), adds a Start menu entry, a desktop icon "
+                                 "(optional) and an entry in Settings > Apps to uninstall it.\nAlso made: "
+                                 + result + "\n")
         size = os.path.getsize(result) / 1_048_576
-        self.log.emit(f"\nWindows build: {result}  ({size:.0f} MB)\n" + (
+        return True, result, (f"\nWindows build: {result}  ({size:.0f} MB)\n" + (
             "Copy it to a Windows PC and run it." if self.single_file else
             f"Copy the zip to a Windows PC, extract it, and run {self.app}\\{self.app}.exe.") + "\n")
-        self.finished.emit(True, result)
 
 
 # ============================================================ 2. GitHub Actions

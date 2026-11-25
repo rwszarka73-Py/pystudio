@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, Signal
 
@@ -98,6 +99,7 @@ def prune_qt(folder, uses_qml=False):
 class Publisher(QObject):
     log = Signal(str)
     finished = Signal(bool, str)   # ok, message (release folder or error)
+    _packaged = Signal(str)         # from the packaging thread: "" = done, else the error
 
     def __init__(self, project, python, single_file=False, make_deb=True, parent=None):
         super().__init__(parent)
@@ -113,6 +115,8 @@ class Publisher(QObject):
         self.version = project["version"] or "1.0.0"
         self.out = os.path.join(root, "publish")
         self.release = os.path.join(self.out, f"{self.app}-{self.version}-linux")
+        self._canceled = False
+        self._packaged.connect(self._package_done)
 
     # ------------------------------------------------------------ process chain
     def _run(self, args, then):
@@ -136,6 +140,7 @@ class Publisher(QObject):
 
     def cancel(self):
         """Stop publishing (dialog closed). No signals afterwards."""
+        self._canceled = True
         if self.proc is not None and self.proc.state() != QProcess.NotRunning:
             try:
                 self.proc.finished.disconnect()
@@ -232,10 +237,29 @@ class Publisher(QObject):
     def _built(self, code):
         if code != 0:
             return self._fail(f"PyInstaller failed (exit code {code}). See the log above.")
-        try:
-            self._package()
-        except Exception as e:  # noqa: BLE001 - report any packaging problem to the user
-            return self._fail(f"Packaging failed: {e}")
+        # Copying, trimming Qt, the .tar.gz and the .deb take a minute or more: off the main thread, so
+        # PyStudio keeps responding (no "not responding" box)
+        self.log.emit("Packaging (the .tar.gz" + (" and .deb" if self.make_deb else "") + ") - this takes a "
+                      "minute or two; PyStudio stays usable meanwhile...\n")
+
+        def work():
+            try:
+                self._package()
+                err = ""
+            except Exception as e:  # noqa: BLE001 - report any packaging problem to the user
+                err = str(e) or type(e).__name__
+            try:
+                self._packaged.emit(err)
+            except RuntimeError:          # PyStudio closed meanwhile
+                pass
+        self._thread = threading.Thread(target=work, name="publish-package", daemon=True)
+        self._thread.start()
+
+    def _package_done(self, err):
+        if self._canceled:
+            return
+        if err:
+            return self._fail(f"Packaging failed: {err}")
         self.log.emit(f"\nPublished to {self.release}\n")
         self.finished.emit(True, self.release)
 
