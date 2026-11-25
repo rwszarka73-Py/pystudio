@@ -7,7 +7,7 @@ import shutil
 import subprocess
 
 from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QUrl
-from PySide6.QtGui import QCursor, QDesktopServices, QFont, QGuiApplication
+from PySide6.QtGui import QDesktopServices, QFont, QGuiApplication
 from PySide6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QLabel, QLineEdit,
                                QMessageBox, QPushButton, QVBoxLayout)
 
@@ -29,6 +29,40 @@ def _gh(args, cwd=None, timeout=30):
         return r.returncode, r.stdout, r.stderr
     except (OSError, subprocess.SubprocessError) as e:
         return 1, "", str(e)
+
+
+def busy(parent, text, fn, title="Publish to GitHub"):
+    """Run fn() off the main thread with a small progress window, keeping PyStudio responsive
+    (no "not responding" box while gh/git talk to GitHub). Returns fn()'s result."""
+    import threading
+    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtWidgets import QProgressDialog
+    result = {}
+
+    def work():
+        try:
+            result["v"] = fn()
+        except Exception as e:  # noqa: BLE001 - handed back to the caller
+            result["e"] = e
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+    box = QProgressDialog(text, None, 0, 0, parent)
+    box.setWindowTitle(title)
+    box.setWindowModality(Qt.WindowModal)
+    box.setCancelButton(None)
+    box.setMinimumWidth(360)
+    loop = QEventLoop()
+    timer = QTimer()
+    timer.timeout.connect(lambda: t.is_alive() or loop.quit())
+    timer.start(50)
+    QTimer.singleShot(300, lambda: t.is_alive() and box.show())    # quick ones never flash a window
+    loop.exec()
+    timer.stop()
+    box.close()
+    box.deleteLater()
+    if "e" in result:
+        raise result["e"]
+    return result.get("v")
 
 
 def signed_in_user():
@@ -124,9 +158,13 @@ def ensure_signed_in(parent):
         from . import components
         if not components.ask_install(["gh"], parent, "Publishing to GitHub uses the GitHub CLI (gh)."):
             return ""
-    user = signed_in_user()
+    def check():
+        u = signed_in_user()
+        if u:
+            _gh(["auth", "setup-git"])
+        return u
+    user = busy(parent, "Checking your GitHub sign-in...", check)
     if user:
-        _gh(["auth", "setup-git"])
         return user
     if QMessageBox.question(parent, "Publish to GitHub", "First, sign in to GitHub (once). Your browser opens "
                             "GitHub's sign-in page and you paste a code PyStudio shows you. Continue?") \
@@ -134,7 +172,7 @@ def ensure_signed_in(parent):
         return ""
     if SignInDialog(parent).exec() != QDialog.Accepted:
         return ""
-    return signed_in_user()
+    return busy(parent, "Checking your GitHub sign-in...", signed_in_user)
 
 
 class PublishDialog(QDialog):
@@ -207,9 +245,12 @@ def publish(panel, quiet=False, private=True):
             return
         name = dlg.name()
         if first or changed:
-            g.run_sync(["add", "-A"], timeout=120)
-            code, out, err = g.run_sync(["commit", "-m", "Initial commit" if first else "Before publishing"],
-                                        timeout=120)
+            msg_ = "Initial commit" if first else "Before publishing"
+
+            def commit():
+                g.run_sync(["add", "-A"], timeout=300)
+                return g.run_sync(["commit", "-m", msg_], timeout=300)
+            code, out, err = busy(panel, "Committing the project's files...", commit)
             if code != 0 and "nothing to commit" not in (out + err):
                 QMessageBox.warning(panel, "Publish to GitHub", (err or out).strip()[-1200:])
                 return
@@ -220,11 +261,8 @@ def publish(panel, quiet=False, private=True):
         if dlg.e_desc.text().strip():
             args += ["--description", dlg.e_desc.text().strip()]
         win.statusBar().showMessage(f"Publishing to github.com/{user}/{name}...")
-        QGuiApplication.setOverrideCursor(QCursor(Qt.BusyCursor))
-        try:
-            code, out, err = _gh(args, cwd=g.root, timeout=600)
-        finally:
-            QGuiApplication.restoreOverrideCursor()
+        code, out, err = busy(panel, f"Creating github.com/{user}/{name} and uploading the project...\n"
+                                     "This can take a minute.", lambda: _gh(args, cwd=g.root, timeout=600))
         panel.refresh()
         if code == 0:
             url = f"https://github.com/{user}/{name}"

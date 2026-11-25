@@ -549,8 +549,12 @@ class GitChangesPanel(QWidget):
         if not self._say("Create Git Repository", code, out, err):
             return
         self.git.set_folder(folder)
-        self.git.run_sync(["add", "-A"])
-        code, out, err = self.git.run_sync(["commit", "-m", "Initial commit"])
+        from .ghpublish import busy
+
+        def commit():
+            self.git.run_sync(["add", "-A"], timeout=300)
+            return self.git.run_sync(["commit", "-m", "Initial commit"], timeout=300)
+        code, out, err = busy(self, "Adding the project's files...", commit, "Create Git Repository")
         self._say("Create Git Repository", code, out, err, "Created the repository with an initial commit.")
         self.refresh()
 
