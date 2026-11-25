@@ -164,13 +164,20 @@ class Project:
         return ""
 
     def current_startup_form(self):
+        """The form main.py creates: a project form it constructs (anywhere, e.g. inside main()),
+        else the class its first top-level import brings in (PyStudio's own startup code)."""
         main = os.path.join(self.root, self["startup"] or "main.py")
         try:
             with open(main, encoding="utf-8") as f:
-                m = re.search(r"^from (\w+) import (\w+)\s*$", f.read(), re.M)
-            return m.group(2) if m else ""
+                src = f.read()
         except OSError:
             return ""
+        made = [m.group(1) for m in re.finditer(r"\b(\w+)\(\s*\)", src)]
+        for cls in made:
+            if cls in {c for c, _s in self.forms()}:
+                return cls
+        m = re.search(r"^from (\w+) import (\w+)\s*$", src, re.M)
+        return m.group(2) if m else ""
 
 
 # ============================================================ dialog
@@ -237,10 +244,12 @@ class ProjectPropertiesDialog(QDialog):
         self.cb_form = QComboBox()
         self.forms = self.p.forms()
         current = self.p.current_startup_form()
+        self._form_at_open = None
         for cls, stem in self.forms:
             self.cb_form.addItem(f"{cls}  ({stem}.ui)", (cls, stem))
             if cls == current:
                 self.cb_form.setCurrentIndex(self.cb_form.count() - 1)
+        self._form_at_open = self.cb_form.currentData()
         if not self.forms:
             self.cb_form.addItem("(no forms in this project)")
             self.cb_form.setEnabled(False)
@@ -733,7 +742,7 @@ class ProjectPropertiesDialog(QDialog):
         self._store_fields()
         if self.forms and self.cb_form.currentData() and not p.external:
             cls, stem = self.cb_form.currentData()
-            if cls != p.current_startup_form():
+            if (cls, stem) != self._form_at_open and cls != p.current_startup_form():   # only when you change it
                 err = p.set_startup_form(cls, stem)
                 if err:
                     QMessageBox.warning(self, "Startup form", err)
