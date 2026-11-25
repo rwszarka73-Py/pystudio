@@ -1542,9 +1542,25 @@ class FormDesigner(ToolStripMixin, MenuDesignerMixin, QWidget):
             n, p = n + 1, p.parentWidget()
         return n
 
+    def _show_title(self, f):
+        """The form's title bar: its Icon (like a real window's) and its Text."""
+        import html
+        from PySide6.QtCore import QUrl
+        icon = f.get("icon") or ""
+        path = icon if os.path.isabs(icon) else os.path.join(self.project_dir, icon) if icon else ""
+        title = html.escape(f.get("title") or "")
+        if path and os.path.isfile(path):
+            src = html.escape(QUrl.fromLocalFile(path).toString(), quote=True)
+            self.title_bar.setTextFormat(Qt.RichText)
+            self.title_bar.setText(f'<img src="{src}" width="16" height="16" style="vertical-align: middle">'
+                                   f'&nbsp;&nbsp;{title}')
+        else:
+            self.title_bar.setTextFormat(Qt.PlainText)
+            self.title_bar.setText(f.get("title") or "")
+
     def apply_form_visuals(self):
         f = self.form
-        self.title_bar.setText(f["title"])
+        self._show_title(f)
         self.surface.setStyleSheet(M.SURFACE_CSS + "\n" + form_css(f))
         self.surface._form_surface = True
         self.surface.setFont(M.font_from_dict(f.get("font")))
