@@ -69,6 +69,7 @@ EVENT_MAP = {
     ("DataGridView", "CellClick"): "cellClicked", ("DataGridView", "CellContentClick"): "cellClicked",
     ("DataGridView", "CellDoubleClick"): "cellDoubleClicked", ("DataGridView", "CellValueChanged"): "cellChanged",
     ("DataGridView", "SelectionChanged"): "itemSelectionChanged",
+    ("DataGridView", "CellMouseDown"): "cellPressed", ("DataGridView", "CellMouseClick"): "cellPressed",
     ("TreeView", "AfterSelect"): "currentItemChanged", ("TreeView", "NodeMouseDoubleClick"): "itemDoubleClicked",
     ("TreeView", "NodeMouseClick"): "itemClicked", ("TreeView", "AfterExpand"): "itemExpanded",
     ("ListView", "SelectedIndexChanged"): "itemSelectionChanged", ("ListView", "DoubleClick"): "itemDoubleClicked",
@@ -384,6 +385,8 @@ def parse_vbproj(path):
     m = re.search(r"<StartupObject>[\w.]*?(\w+)</StartupObject>", text)
     if not startup and m and m.group(1) != "Sub Main":
         startup = m.group(1)
+    if not startup:                  # Sub Main (Program.vb / a Module): Application.Run(New MainForm())
+        startup = _startup_from_main(folder, vb_files)
     settings = os.path.join(folder, "My Project", "Settings.settings")
     return {"name": name, "folder": folder, "vb_files": vb_files, "forms": forms, "startup": startup,
             "settings": settings if os.path.exists(settings) else None}
@@ -852,6 +855,43 @@ def _py_params(params):
     return names
 
 
+def _startup_from_main(folder, rel_files):
+    """The form a Sub Main starts: Application.Run(New X()) or Dim f As New X ... Application.Run(f)."""
+    for rel in rel_files:
+        try:
+            t = open(os.path.join(folder, rel.replace("\\", os.sep)), encoding="utf-8-sig", errors="replace").read()
+        except OSError:
+            continue
+        if "Application.Run" not in t:
+            continue
+        m = re.search(r"Application\.Run\(\s*New\s+(\w+)", t)
+        if m:
+            return m.group(1)
+        m = re.search(r"Application\.Run\(\s*(\w+)\s*\)", t)
+        if m:
+            v = re.search(rf"\b{m.group(1)}\s+As\s+New\s+(\w+)|\b{m.group(1)}\s*=\s*New\s+(\w+)", t)
+            if v:
+                return v.group(1) or v.group(2)
+    return None
+
+
+# Form events with no signal in Qt: the form's matching method (closeEvent...) gets the VB code
+FORM_OVERRIDES = {
+    "FormClosing": ("closeEvent", "e.Cancel = True  ->  event.ignore(); return"),
+    "FormClosed": ("closeEvent", ""),
+    "Resize": ("resizeEvent", "Me.Width / Me.Height  ->  self.width() / self.height()"),
+    "SizeChanged": ("resizeEvent", ""),
+    "KeyDown": ("keyPressEvent", "e.KeyCode = Keys.F5  ->  event.key() == Qt.Key_F5;  e.Control  ->  "
+                "event.modifiers() & Qt.ControlModifier"),
+    "KeyUp": ("keyReleaseEvent", "e.KeyCode  ->  event.key()"),
+    "KeyPress": ("keyPressEvent", "e.KeyChar  ->  event.text()"),
+    "Paint": ("paintEvent", "e.Graphics  ->  painter = QPainter(self)"),
+    "MouseDown": ("mousePressEvent", "e.X, e.Y  ->  event.position().x(), event.position().y()"),
+    "MouseUp": ("mouseReleaseEvent", ""),
+    "MouseMove": ("mouseMoveEvent", ""),
+}
+
+
 def convert_code(py_source, vb_code, builder, log):
     """Wire handlers for 'Handles X.Event' subs (VB body as comments); other Subs/Functions become
     methods with the VB code as comments. Returns the new Python source."""
@@ -865,6 +905,7 @@ def convert_subs(py_source, subs, builder, log, lang="VB"):
     tool_of = {n: w._ps.get("tool") for n, w in builder.widgets.items()}
     comp_of = {c["name"]: c["type"] for c in builder.d.components}
     load_bodies = []
+    overrides = {}                     # closeEvent -> [(sub name, handles, vb lines)]
     extra = []
     for kind, name, params, handles, body in subs:
         vb_text = _dedent(body)
@@ -873,6 +914,10 @@ def convert_subs(py_source, subs, builder, log, lang="VB"):
             ctrl, _, event = h.partition(".")
             if ctrl in ("Me", "MyBase") and event in ("Load", "Shown"):
                 load_bodies.append((name, vb_text))
+                wired = True
+                continue
+            if ctrl in ("Me", "MyBase", "this", "base") and event in FORM_OVERRIDES:
+                overrides.setdefault(FORM_OVERRIDES[event][0], []).append((name, h, event, vb_text))
                 wired = True
                 continue
             if ctrl in builder.menu_names:
@@ -906,6 +951,15 @@ def convert_subs(py_source, subs, builder, log, lang="VB"):
         src = src.replace("        # Event wiring", "        self.form_load()\n\n        # Event wiring", 1)
         src = src.rstrip() + "\n\n    def form_load(self):\n" + "".join(
             f"        # {ln}\n" if ln else "        #\n" for ln in lines[1:]) + "        pass\n"
+    for method, items in overrides.items():
+        lines = []
+        for n, h, event, b in items:
+            hint = FORM_OVERRIDES[event][1]
+            lines += [f"{lang} {n} ({how} {h}):"] + ([f"  (in Python: {hint})"] if hint else []) + b + [""]
+        src = src.rstrip() + f"\n\n    def {method}(self, event):\n" + "".join(
+            f"        # {ln}\n" if ln else "        #\n" for ln in lines[:-1]) + \
+            f"        super().{method}(event)\n"
+        log.append(f"  {', '.join(n for n, *_r in items)}: form event -> {method} (the VB code is inside)")
     for kind, name, params, vb_text in extra:
         args = ", ".join(["self"] + _py_params(params))
         src = src.rstrip() + f"\n\n    def {name}({args}):\n" + "".join(

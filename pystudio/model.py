@@ -132,6 +132,7 @@ EVENTS = {
     "Label": [("linkActivated", "link")],
     "PictureBox": [],
     "DataGridView": [("cellClicked", "row, column"), ("cellDoubleClicked", "row, column"),
+                     ("cellPressed", "row, column"),
                      ("cellChanged", "row, column"), ("itemSelectionChanged", "")],
     "GroupBox": [("toggled", "checked")],
     "Panel": [],
