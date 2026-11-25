@@ -172,8 +172,10 @@ class PublishDialog(QDialog):
         return safe_name(self.e_name.text())
 
 
-def publish(panel):
-    """Git Changes > Publish to GitHub. panel is the GitPanel (its .git, ensure_identity, refresh)."""
+def publish(panel, quiet=False, private=True):
+    """Git Changes > Publish to GitHub. panel is the GitPanel (its .git, ensure_identity, refresh).
+    quiet: no name dialog - the project's name, private (New Project's "Publish to GitHub")."""
+    auto = quiet
     g = panel.git
     if not g.root:
         return
@@ -198,7 +200,10 @@ def publish(panel):
     name = os.path.basename(g.root.rstrip(os.sep))
     while True:
         dlg = PublishDialog(user, name, panel, note)
-        if dlg.exec() != QDialog.Accepted:
+        dlg.cb_private.setChecked(private)
+        if quiet:
+            quiet = False                     # only the first try: a name clash asks
+        elif dlg.exec() != QDialog.Accepted:
             return
         name = dlg.name()
         if first or changed:
@@ -224,6 +229,11 @@ def publish(panel):
         if code == 0:
             url = f"https://github.com/{user}/{name}"
             win.statusBar().showMessage(f"Published to {url}", 8000)
+            panel.published = url
+            if auto:
+                out = getattr(win, "output", None)
+                out is not None and out.write(f"Published to GitHub: {url}\n", "info")
+                return
             box = QMessageBox(QMessageBox.Information, "Publish to GitHub",
                               f"Published to <a href='{url}'>{url}</a>.<br><br>From now on, <b>Commit and Push</b> "
                               "(or ↑) sends your changes there.", QMessageBox.Ok, panel)

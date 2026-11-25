@@ -470,6 +470,15 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         self.prs_dock.setWidget(self.prs)
         self.addDockWidget(Qt.BottomDockWidgetArea, self.prs_dock)
         self.prs_dock.hide()
+        from .ghissues import IssuesWindow
+        self.issues = IssuesWindow(self.git)
+        self.issues.log.connect(lambda t: self.output.write(t, "info"))
+        self.issues.fixes.connect(self._fixes_in_commit)
+        self.issues_dock = QDockWidget("GitHub Issues", self)
+        self.issues_dock.setObjectName("Issues")
+        self.issues_dock.setWidget(self.issues)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.issues_dock)
+        self.issues_dock.hide()
         self._blame_cache = {}             # editor id -> (document revision, [entries])
         self._blame_timer = QTimer(self, singleShot=True, interval=350)
         self._blame_timer.timeout.connect(self._update_inline_blame)
@@ -733,6 +742,8 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         self.a_inline_blame.toggled.connect(self._toggle_inline_blame)
         m.addSeparator()
         m.addAction("GitHub Pull Re&quests", self.show_pull_requests)
+        m.addAction("GitHub &Issues", self.show_issues)
+        m.addAction("Create GitHub &Release...", self.create_release)
         m.addSeparator()
         m.addAction("&Create Git Repository...", lambda: self.git_panel.create_repository())
         m.addAction("Add &Remote...", lambda: self.git_panel.add_remote())
@@ -1633,6 +1644,26 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
                 self.tabs.setCurrentWidget(d)
         self.output.clear()
         self.output.write(f"Created project {name} in {root}\n", "info")
+        if dlg.publish_github:
+            QTimer.singleShot(300, lambda: self._publish_new_project(root))
+
+    def create_release(self):
+        from . import ghrelease
+        ghrelease.create_release(self.project, self)
+
+    def _publish_new_project(self, root):
+        """New Project's "Publish to GitHub": a repository with an initial commit, then on GitHub."""
+        from . import ghpublish
+        p = self.git_panel
+        if os.path.abspath(p.git.folder or "") != os.path.abspath(root):
+            p.set_folder(root)
+        if not p.git.root:
+            p.create_repository()
+            if not p.git.root:
+                return
+        self.git_dock.show()
+        self.git_dock.raise_()
+        ghpublish.publish(p, quiet=True)
 
     def add_form_dialog(self, folder):
         self.add_item_dialog("Windows Form", folder)
@@ -3516,6 +3547,26 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         v.open_commit.connect(lambda sha: self._add_editor(DiffView(f"{sha[:8]} (commit)", self.git.show(sha))))
         v.open_line.connect(self.open_file_at)
         self._add_editor(v)
+
+    def show_issues(self):
+        self.issues_dock.show()
+        self.issues_dock.raise_()
+        self.issues.refresh()
+
+    def _fixes_in_commit(self, line):
+        """Issues > Fixes #N: a line in the commit message (GitHub closes the issue when the commit arrives)."""
+        m = self.git_panel.message
+        text = m.toPlainText().rstrip()
+        if line not in text:
+            m.setPlainText((text + "\n\n" if text else "") + line)
+        self.git_dock.show()
+        self.git_dock.raise_()
+        m.setFocus()
+        c = m.textCursor()
+        c.movePosition(c.MoveOperation.Start)
+        m.setTextCursor(c)
+        self.statusBar().showMessage(f"Added \"{line}\" to the commit message - type what you changed above it.",
+                                     8000)
 
     def show_pull_requests(self):
         self.prs_dock.show()

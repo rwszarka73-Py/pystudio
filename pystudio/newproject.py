@@ -3,7 +3,7 @@ import os
 import re
 
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtWidgets import (QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
                                QLineEdit, QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget)
 
 from .templates import TEMPLATE_INFO, TEMPLATES, default_repos_dir
@@ -82,6 +82,11 @@ class NewProjectDialog(QDialog):
             self.cb_solution.currentIndexChanged.connect(self._solution_mode)
 
         form.addRow("", self.preview)
+        self.ck_github = QCheckBox("Publish to GitHub (a private repository named after the project)")
+        self.ck_github.setToolTip("Creates a Git repository and puts it on your GitHub account right away, like "
+                                  "Git Changes > Publish to GitHub. The first time, it signs you in to GitHub.")
+        self.ck_github.setChecked(settings.value("newProjectGitHub", False, type=bool))
+        form.addRow("", self.ck_github)
 
         self.buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         self.buttons.button(QDialogButtonBox.Ok).setText("Create")
@@ -103,10 +108,15 @@ class NewProjectDialog(QDialog):
         self.name.selectAll()
 
     @property
+    def publish_github(self):
+        return self.ck_github.isChecked() and not self.add_to_solution
+
+    @property
     def add_to_solution(self):
         return bool(self.solution_root) and self.cb_solution.currentIndex() == 1
 
     def _solution_mode(self, _i=None):
+        self.ck_github.setVisible(not self.add_to_solution)   # it goes in the solution's repository
         if self.add_to_solution:
             self._normal_location = self.location.text()
             self.location.setText(self.solution_root)
@@ -162,4 +172,6 @@ class NewProjectDialog(QDialog):
             if not self.add_to_solution:
                 QSettings().setValue("projectsDir", self.location.text().strip())
             QSettings().setValue("lastTemplate", self.template.currentText())
+            if not self.add_to_solution:
+                QSettings().setValue("newProjectGitHub", self.ck_github.isChecked())
             self.accept()

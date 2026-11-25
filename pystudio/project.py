@@ -511,6 +511,11 @@ class ProjectPropertiesDialog(QDialog):
         self.b_open_out.clicked.connect(self._open_output)
         row.addWidget(self.b_publish)
         row.addWidget(self.b_open_out)
+        b_rel = QPushButton("Create GitHub Release...")
+        b_rel.setToolTip("Put what you published (.deb, .tar.gz, Windows .exe / Setup.exe) on the project's GitHub "
+                         "Releases page")
+        b_rel.clicked.connect(self._github_release)
+        row.addWidget(b_rel)
         row.addStretch()
         v.addLayout(row)
         self.pub_log = QPlainTextEdit()
@@ -518,6 +523,10 @@ class ProjectPropertiesDialog(QDialog):
         v.addWidget(self.pub_log, 1)
         self.publisher = None
         return w
+
+    def _github_release(self):
+        from . import ghrelease
+        ghrelease.create_release(self.p, self)
 
     def _open_output(self):
         from PySide6.QtCore import QUrl

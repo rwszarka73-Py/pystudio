@@ -2,7 +2,7 @@
 
 **A Visual Studio-style Python IDE for Ubuntu**, built with PySide6. It gives you a form designer, code editor, debugger, databases, Git and publishing in one window, so you can build Python desktop apps the way you'd build WinForms apps in Visual Studio.
 
-Current version: **2.9.6**
+Current version: **2.10.0**
 
 ---
 
@@ -41,7 +41,9 @@ Current version: **2.9.6**
 ### Source control
 - **Git**: Git Changes, history, blame, branches, and a merge editor
 - **Publish to GitHub** in one click: it creates the repository from the project's name and pushes
-- GitHub **pull requests**
+- GitHub **pull requests** and **issues** (with *Fixes #N* in commit messages)
+- **Create GitHub Release**: puts your published `.deb`, `.tar.gz`, `.exe` and Setup.exe on the project's Releases page
+- **New Project** can publish the project to GitHub right away
 
 ### AI assistant
 - Chat about your code, plus Explain, Fix Errors, Translate VB/C#, and Write Tests

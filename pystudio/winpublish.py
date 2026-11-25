@@ -715,6 +715,9 @@ class WindowsPublishDialog(QDialog):
         self.log.setStyleSheet("font-family: monospace;")
         self.bb = QDialogButtonBox(QDialogButtonBox.Close)
         self.bb.rejected.connect(self.reject)
+        self.b_release = self.bb.addButton("Create GitHub Release...", QDialogButtonBox.ActionRole)
+        self.b_release.setToolTip("Put the .exe / Setup.exe on the project's GitHub Releases page")
+        self.b_release.clicked.connect(self._github_release)
         self.b_folder = self.bb.addButton("Open Folder", QDialogButtonBox.ActionRole)
         self.b_folder.clicked.connect(self._open_folder)
         self.b_folder.setEnabled(False)
@@ -933,6 +936,10 @@ class WindowsPublishDialog(QDialog):
             else:
                 self._write("Nothing to download yet - has a run finished successfully? (GitHub > Actions)\n")
         self._gh(["run", "download", "-n", name, "-D", dest], done)
+
+    def _github_release(self):
+        from . import ghrelease
+        ghrelease.create_release(self.p, self)
 
     def _open_folder(self):
         from PySide6.QtCore import QUrl
