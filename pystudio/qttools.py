@@ -1,4 +1,6 @@
 """Qt Designer launch + automatic .ui -> ui_*.py generation (pyside6-uic)."""
+import glob
+import re
 import os
 import shutil
 import subprocess
@@ -131,3 +133,69 @@ class DesignerBridge(QObject):
                 ok, msg = compile_ui(path)
                 self.message.emit(msg + "\n", "info" if ok else "err")
         self._pending.clear()
+
+
+# ---------------------------------------------------------------- projects made outside PyStudio
+_GEN_HEADER = re.compile(r"generated from reading ui file '([^']+)'", re.I)
+
+
+def external_generated(ui_path, root=None):
+    """The .py a generator (pyuic5/6, pyside2/6-uic) made from ui_path, found by its header comment:
+    [(py_path, toolkit)] where toolkit is PyQt5, PyQt6, PySide2 or PySide6."""
+    name = os.path.basename(ui_path).lower()
+    folders = dict.fromkeys([os.path.dirname(ui_path)] + ([root] if root else []))
+    out = []
+    for folder in folders:
+        for py in sorted(glob.glob(os.path.join(folder, "*.py"))):
+            try:
+                with open(py, encoding="utf-8", errors="replace") as f:
+                    head = f.read(4000)
+            except OSError:
+                continue
+            m = _GEN_HEADER.search(head)
+            if not m or os.path.basename(m.group(1)).lower() != name:
+                continue
+            for kit in ("PyQt6", "PyQt5", "PySide6", "PySide2"):
+                if re.search(rf"\b(from|import) {kit}\b", head) or f"{kit} UI code generator" in head:
+                    out.append((py, kit))
+                    break
+    return out
+
+
+def compile_external(ui_path, root, pythons):
+    """After a form of an outside project is saved: regenerate the .py made from it (e.g. app_ui.py by
+    pyuic5) with the same generator, so the program sees the change. pythons: interpreters to try.
+    Returns [(ok, message)] - empty when nothing was generated from this form."""
+    results = []
+    for out, kit in external_generated(ui_path, root):
+        try:
+            with open(out, encoding="utf-8", errors="replace") as f:
+                runnable = "__main__" in f.read()      # made with -x (has its own test main)
+        except OSError:
+            runnable = False
+        cmds = []
+        if kit in ("PyQt5", "PyQt6"):
+            cmds = [[py, "-m", f"{kit}.uic.pyuic"] for py in pythons if py]
+        else:
+            tool = _tool(kit.lower() + "-uic")
+            cmds = [[tool]] if tool else []
+            if kit == "PySide6":
+                cmds += [[py, "-m", "PySide6.scripts.pyside_tool", "uic"] for py in pythons if py]
+        for base in cmds:
+            args = base + ([] if kit.startswith("PySide") or not runnable else ["-x"]) + [ui_path, "-o", out]
+            try:
+                r = subprocess.run(args, capture_output=True, text=True, timeout=60)
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if r.returncode == 0:
+                results.append((True, f"Updated {os.path.basename(out)} from {os.path.basename(ui_path)}"))
+                break
+            if "No module named" not in (r.stderr or ""):
+                results.append((False, f"{os.path.basename(out)} wasn't updated: " +
+                                ((r.stderr or "").strip().splitlines() or ["generator failed"])[-1]))
+                break
+        else:
+            results.append((False, f"{os.path.basename(out)} wasn't updated: no Python here has {kit}'s form "
+                                   f"generator. Pick the project's Python in Project Properties > Debug."))
+    return results
+

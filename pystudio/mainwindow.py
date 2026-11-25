@@ -1498,6 +1498,8 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         if ok and isinstance(ed, CodeEditor) and ed.path and self.solution_root:
             self.task_list.update_file(ed.path, ed.toPlainText())
             self.class_view.file_saved(ed.path)
+        if ok and (isinstance(ed, FormDesigner) or type(ed).__name__ == "LayoutDesigner") and self._is_external(ed.path):
+            self._regen_external(ed.path)      # e.g. app_ui.py made by pyuic5 from this form
         if ok and isinstance(ed, FormDesigner) and not self._is_external(ed.path):
             done, msg = compile_ui(ed.path)   # keep ui_<form>.py in step with the form
             if not done:
@@ -2150,6 +2152,14 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         m = re.search(r"ModuleNotFoundError: No module named '([\w.]+)'", tail)
         if m:
             QTimer.singleShot(0, lambda: self.offer_module_fix(m.group(1).split(".")[0]))
+
+    def _regen_external(self, ui_path):
+        root = (self.solution.project_for(ui_path) if self.solution else None) or self.project_root
+        proj = self.project if (self.project and self.project.root == root) else Project(root)
+        current = proj.python(self.python)
+        from .qttools import compile_external
+        for ok, msg in compile_external(ui_path, root, interp.candidates(root, current, self.python)):
+            self.output.write(msg + "\n", "info" if ok else "err")
 
     def _is_external(self, path):
         root = (self.solution.project_for(path) if self.solution else None) or self.project_root
