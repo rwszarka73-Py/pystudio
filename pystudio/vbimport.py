@@ -864,15 +864,52 @@ def _startup_from_main(folder, rel_files):
             continue
         if "Application.Run" not in t:
             continue
-        m = re.search(r"Application\.Run\(\s*New\s+(\w+)", t)
+        m = re.search(r"Application\.Run\(\s*New\s+([\w.]+)", t)
         if m:
-            return m.group(1)
+            return m.group(1).split(".")[-1]
         m = re.search(r"Application\.Run\(\s*(\w+)\s*\)", t)
         if m:
             v = re.search(rf"\b{m.group(1)}\s+As\s+New\s+(\w+)|\b{m.group(1)}\s*=\s*New\s+(\w+)", t)
             if v:
                 return v.group(1) or v.group(2)
     return None
+
+
+def pick_startup(info, classes):
+    """The form the app opens first. <StartupObject> can name a form, but also "Sub Main" or a Program class /
+    Module (PrismPVR.Program): then it's the form that code creates - Application.Run(New MainForm()), or
+    Dim/Using f As New MainForm ... Application.Run(f) - qualified names (New UI.MainForm) included."""
+    st = info.get("startup")
+    if st in classes:
+        return st
+    folder = info.get("folder", "")
+    run_files = []
+    for rel in info.get("vb_files", []) + info.get("cs_files", []):
+        try:
+            t = open(os.path.join(folder, rel.replace("\\", os.sep)), encoding="utf-8-sig", errors="replace").read()
+        except OSError:
+            continue
+        if "Application.Run" in t:
+            # the Program file named as the startup object first
+            run_files.insert(0 if st and re.search(rf"\b(Module|Class|class)\s+{re.escape(st)}\b", t) else
+                             len(run_files), t)
+    for t in run_files:
+        m = re.search(r"Application\.Run\(\s*(?:New|new)\s+([\w.]+)", t)
+        if m and m.group(1).split(".")[-1] in classes:
+            return m.group(1).split(".")[-1]
+        m = re.search(r"Application\.Run\(\s*(\w+)\s*\)", t)
+        if m:
+            v = re.search(rf"\b{m.group(1)}\s+As\s+New\s+([\w.]+)|\b{m.group(1)}\s*=\s*(?:New|new)\s+([\w.]+)", t)
+            if v and (v.group(1) or v.group(2)).split(".")[-1] in classes:
+                return (v.group(1) or v.group(2)).split(".")[-1]
+        made = [n.split(".")[-1] for n in re.findall(r"\b(?:New|new)\s+([\w.]+)\s*\(", t)]
+        made = [n for n in made if n in classes]
+        if made:
+            return made[-1]           # the form Sub Main creates last is the one it runs
+    for name in ("MainForm", "FormMain", "frmMain", "Main", "Form1"):
+        if name in classes:
+            return name
+    return classes[0] if classes else None
 
 
 # Form events with no signal in Qt: the form's matching method (closeEvent...) gets the VB code
@@ -1091,7 +1128,7 @@ def import_project(vbproj, dest_root, project_name=None):
         report += log
         classes.append(cls)
         opened += [ui_path, py_path]
-    startup = info["startup"] if info["startup"] in classes else (classes[0] if classes else None)
+    startup = pick_startup(info, classes)
     main_py = os.path.join(dest_root, "main.py")
     if startup:
         _write(main_py, MAIN_FORMS.format(name=name).replace("from form1 import Form1",
