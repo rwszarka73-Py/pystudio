@@ -259,11 +259,9 @@ class Publisher(QObject):
         return "\n".join(text)
 
     def _icon_path(self):
-        icon = self.p["icon"]
-        if not icon:
-            return None
-        full = icon if os.path.isabs(icon) else os.path.join(self.p.root, icon)
-        return full if os.path.exists(full) else None
+        # Project Properties' icon, else the startup form's Icon, else icon.png & co. by the startup file
+        from .winpublish import icon_source
+        return icon_source(self.p)
 
     def _built(self, code):
         if code != 0:

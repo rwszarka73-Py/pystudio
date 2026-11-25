@@ -143,6 +143,27 @@ def package_data(project):
     return out
 
 
+def form_icon(project):
+    """The Icon set on the startup form (else any form) in the designer: <property name="windowIcon">."""
+    forms = sorted(glob.glob(os.path.join(project.root, "**", "*.ui"), recursive=True))
+    start = os.path.splitext(os.path.join(project.root, startup_file(project)))[0]
+    forms.sort(key=lambda f: (os.path.splitext(f)[0] != start, f))
+    for ui in forms:
+        if any(part in DATA_SKIP_DIRS or part.startswith(".") for part in os.path.relpath(ui, project.root).split(os.sep)[:-1]):
+            continue
+        try:
+            with open(ui, encoding="utf-8", errors="replace") as f:
+                m = re.search(r'<property name="windowIcon">\s*<iconset[^>]*>\s*(?:<normaloff>)?([^<]+?)\s*<', f.read())
+        except OSError:
+            continue
+        if m:
+            p = m.group(1).strip()
+            p = p if os.path.isabs(p) else os.path.join(os.path.dirname(ui), p)
+            if os.path.exists(p):
+                return p
+    return None
+
+
 def icon_source(project):
     """The program's icon: the one set in Project Properties, or else an icon file next to the startup file
     (icon / app / appicon / <name> . ico / png / svg)."""
@@ -150,6 +171,9 @@ def icon_source(project):
     full = icon if icon and os.path.isabs(icon) else os.path.join(project.root, icon) if icon else ""
     if full and os.path.exists(full):
         return full
+    form = form_icon(project)
+    if form:
+        return form
     start_dir = os.path.dirname(os.path.join(project.root, startup_file(project)))
     for folder in dict.fromkeys([start_dir, project.root, os.path.join(start_dir, "icons"),
                                  os.path.join(start_dir, "resources")]):
