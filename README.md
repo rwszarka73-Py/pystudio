@@ -2,7 +2,7 @@
 
 **A Visual Studio-style Python IDE for Ubuntu**, built with PySide6. It gives you a form designer, code editor, debugger, databases, Git and publishing in one window, so you can build Python desktop apps the way you'd build WinForms apps in Visual Studio.
 
-Current version: **2.10.3**
+Current version: **2.10.4**
 
 ---
 

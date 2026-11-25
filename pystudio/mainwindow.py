@@ -1048,6 +1048,7 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
             self.open_file(p)
 
     def open_file(self, path):
+        self.dismiss_start_page()
         path = os.path.abspath(path)
         for ed in self.editors():
             if ed.path and os.path.abspath(ed.path) == path:
@@ -1757,6 +1758,21 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         sw.raise_()
         sw.setFocus()
 
+    def dismiss_start_page(self):
+        """Opening a project or file any other way (File menu, import, Solution Explorer) closes the Start page,
+        like Visual Studio - otherwise it keeps covering the editor."""
+        sw = self._start_page
+        if sw is None:
+            return
+        self.centralWidget().removeEventFilter(self._start_fit)
+        self._start_page = self._start_fit = None
+        try:
+            sw.finished.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        sw.hide()
+        sw.deleteLater()
+
     def _start_finished(self, sw):
         if self._start_page is not sw:
             return
@@ -1960,6 +1976,7 @@ class MainWindow(AssistantMixin, NavigationMixin, QMainWindow):
         self.statusBar().showMessage(f"Disconnected from {r[0]['host']}", 5000)
 
     def open_folder(self, path):
+        self.dismiss_start_page()
         from . import remote
         if path and remote.remote_for(path) is not None and not remote.ensure_mounted(path, self):
             return
